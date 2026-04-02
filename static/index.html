@@ -772,6 +772,33 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
 
 /* Legacy non-details q-section-title fallback */
 .q-section-title-plain { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--cyan); }
+
+/* Audit cards */
+.audit-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.audit-label {
+  font-size: 10px;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+/* Settings group headers */
+.settings-group-header {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 18px 0 6px 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
 .q-templates { display: flex; flex-direction: column; gap: 10px; }
 .q-template-row {
   background: var(--bg-card);
@@ -848,7 +875,9 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
   <h1>🤖 HH Bot Dashboard</h1>
   <div style="color:var(--dim);font-size:11px">
     🔍 <span id="global-found">0</span> <span data-i18n="hdr_found">найдено</span> &nbsp;
-    ✅ <span id="global-sent">0</span> <span data-i18n="hdr_replies">откликов</span> &nbsp;
+    ✅ <span id="global-sent">0</span> <span data-i18n="hdr_replies">откликов</span>
+    <span id="hdr-daily-counter" style="color:var(--yellow)"></span>
+    <span id="hdr-filters" style="display:inline-flex;gap:3px;margin-left:4px"></span> &nbsp;
     💾 <span id="storage-total">0</span> <span data-i18n="hdr_in_db">в базе</span> &nbsp;
     🧪 <span id="storage-tests">0</span> <span data-i18n="hdr_tests">тестов</span>
   </div>
@@ -861,6 +890,7 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
   <div id="dbg-err" style="display:none;color:#f85149;font-size:11px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
   <button id="lang-btn" onclick="toggleLang()" style="padding:4px 10px;border:1px solid var(--border);background:var(--bg-card2);color:var(--dim);cursor:pointer;border-radius:4px;font-family:inherit;font-size:11px" title="Switch language">RU</button>
   <button id="pause-btn" onclick="sendCmd({type:'pause_toggle'})">⏸ Пауза</button>
+  <span id="apply-mode-badge" style="padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer" onclick="sendCmd({type:'set_config',key:'use_oauth_apply',value:!State.lastSnapshot?.config?.use_oauth_apply})" title="Клик — переключить метод откликов"></span>
 </div>
 
 <!-- Tabs -->
@@ -1024,6 +1054,78 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
 
 <!-- Views Tab -->
 <div id="panel-views" class="panel">
+  <!-- Resume Audit -->
+  <div style="margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="font-size:15px;font-weight:700;color:var(--cyan)">🔍 Аудит резюме</div>
+      <select id="audit-acc-sel" class="apply-input" style="font-size:11px;padding:3px 8px"></select>
+      <button class="btn-sm" onclick="runResumeAudit(this)">Проверить</button>
+      <span id="audit-status" style="font-size:11px;color:var(--dim)"></span>
+    </div>
+    <div style="margin-bottom:12px">
+      <input id="audit-extra-terms" class="apply-input" type="text" style="font-size:11px;width:100%;max-width:600px"
+        placeholder="Доп. запросы для сравнения конкуренции (через запятую): devops, python developer, SRE">
+    </div>
+    <div id="audit-result" style="display:none"></div>
+    <!-- Hot leads -->
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--yellow)">🔥 Горячие лиды</div>
+        <button class="btn-sm" onclick="loadHotLeads(this)">Загрузить</button>
+        <span id="leads-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      <div id="leads-result" style="display:none"></div>
+    </div>
+    <!-- HR Contacts -->
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--cyan)">📇 Контакты HR</div>
+        <button class="btn-sm" onclick="loadHrContacts(this)">Загрузить</button>
+        <span id="contacts-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      <div id="contacts-result" style="display:none"></div>
+    </div>
+    <!-- Remindable negotiations -->
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--magenta)">🔔 Можно напомнить</div>
+        <button class="btn-sm" onclick="loadRemindable(this)">Проверить</button>
+        <span id="remindable-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      <div id="remindable-result" style="display:none"></div>
+    </div>
+    <!-- OAuth API -->
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+        <div style="font-size:14px;font-weight:700;color:var(--green)">🔑 OAuth API</div>
+        <button class="btn-sm" onclick="oauthGetToken(this)">Получить токен</button>
+        <button class="btn-sm" style="color:var(--cyan);border-color:var(--cyan)" onclick="oauthTouch(this)">🚀 Поднять резюме</button>
+        <span id="oauth-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+    </div>
+    <!-- Resume cloning -->
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--magenta)">📋 Резюме аккаунта</div>
+        <button class="btn-sm" onclick="loadAllResumes(this)">Загрузить</button>
+        <span id="resumes-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <select id="clone-preset" class="apply-input" style="font-size:11px;padding:3px 8px">
+          <option value="">— Выбери нишу —</option>
+          <option value="Автоматизация тестирования">Автоматизация тестирования (конкуренция 15.9)</option>
+          <option value="Python Developer">Python Developer (конкуренция 10.3)</option>
+          <option value="QA Engineer">QA Engineer (конкуренция 26.8)</option>
+          <option value="Системный администратор">Системный администратор (конкуренция 20.0)</option>
+          <option value="Аналитик">Аналитик (конкуренция 2.3)</option>
+          <option value="DevOps инженер">DevOps инженер (конкуренция 23.9)</option>
+        </select>
+        <input id="clone-title" class="apply-input" type="text" style="font-size:11px;flex:1;max-width:250px" placeholder="или свой заголовок...">
+        <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="cloneResume(this)">＋ Клонировать</button>
+      </div>
+      <div id="resumes-result" style="display:none"></div>
+    </div>
+  </div>
   <div id="views-panel">
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px" id="views-stats-row"></div>
     <div id="views-accounts"></div>
@@ -1139,168 +1241,13 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
 <!-- Settings Tab -->
 <div id="panel-settings" class="panel">
   <div id="settings-panel">
-    <details class="q-section prio-medium">
-      <summary class="q-section-title" data-i18n="settings_title">⚙️ Настройки бота<span class="prio-badge">Нужно</span></summary>
-      <div class="q-section-body">
-        <div class="settings-grid" id="settings-grid"></div>
-        <button id="settings-apply" onclick="applySettings()" data-i18n="btn_apply_settings">✅ Применить</button>
-        <div id="settings-status"></div>
-      </div>
-    </details>
 
-    <!-- Account cookies update -->
-    <details class="q-section prio-high" open>
-      <summary class="q-section-title" data-i18n="sec_cookies">🔑 Обновить куки аккаунтов<span class="prio-badge">Важно</span></summary>
-      <div class="q-section-body">
-      <div style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.7">
-        Вставьте новый <b>cURL</b> или строку <b>cookie: hhtoken=…</b> — куки обновятся сразу без перезапуска.<br>
-        Получить: <b>F12 → Network → любой запрос к hh.ru → правая кнопка → Copy as cURL</b>
-      </div>
-      <div id="acc-cookies-list"></div>
-      </div>
-    </details>
-
-    <!-- URL pool -->
-    <details class="q-section prio-medium">
-      <summary class="q-section-title" data-i18n="sec_url_pool">🔗 Пул поисковых запросов<span class="prio-badge">Нужно</span></summary>
-      <div class="q-section-body">
-      <div style="font-size:11px;color:var(--dim);margin-bottom:12px">
-        Добавьте URL-адреса поиска вакансий — они появятся как чекбоксы на карточке каждого аккаунта.
-        Поле <b>стр.</b> задаёт глубину поиска (кол-во страниц) для конкретного запроса; если пусто — используется глобальное значение из слайдера выше.
-      </div>
-      <div id="url-pool-rows"></div>
-      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
-        <button class="btn-sm" onclick="urlPoolAddRow()" data-i18n="btn_add_url">＋ Добавить URL</button>
-        <button class="btn-sm" onclick="urlPoolSave(this)" data-i18n="btn_save_pool">💾 Сохранить пул</button>
-        <span id="url-pool-st" style="font-size:11px;color:var(--dim)"></span>
-      </div>
-      </div>
-    </details>
-
-    <!-- Letter templates -->
-    <details class="q-section prio-low">
-      <summary class="q-section-title" data-i18n="sec_letters">✉️ Шаблоны писем<span class="prio-badge">Опционально</span></summary>
-      <div class="q-section-body">
-      <div style="font-size:11px;color:var(--dim);margin-bottom:12px" data-i18n="sec_letters_desc">
-        Создайте именованные шаблоны — они появятся в выпадающем списке на каждой карточке аккаунта.
-      </div>
-      <div class="q-templates" id="lt-templates-list"></div>
-      <div class="q-btn-row">
-        <button class="q-btn" onclick="ltAddTemplate()" data-i18n="btn_add_template">＋ Добавить шаблон</button>
-        <button class="q-btn-save" onclick="ltSave()" data-i18n="btn_save_templates">💾 Сохранить шаблоны</button>
-      </div>
-      <div class="q-status" id="lt-status"></div>
-      </div>
-    </details>
-
-    <!-- Questionnaire templates -->
-    <details class="q-section prio-low">
-      <summary class="q-section-title" data-i18n="sec_questionnaire">📝 Шаблонные ответы на опросы<span class="prio-badge">Опционально</span></summary>
-      <div class="q-section-body">
-      <div style="font-size:11px;color:var(--dim);margin-bottom:10px" data-i18n="sec_questionnaire_desc">
-        Когда вакансия требует опрос — бот автоматически заполнит его.
-        Для каждого шаблона укажи ключевые слова (через запятую) и ответ.
-        Первый совпавший шаблон используется. Последний — ответ по умолчанию.
-      </div>
-      <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">🚀 Загрузить готовые пресеты</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-          <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="qLoadPreset('universal')">🌐 Универсальный</button>
-          <button class="btn-sm" onclick="qLoadPreset('sales')">💼 Продажи / КЦ</button>
-          <button class="btn-sm" onclick="qLoadPreset('office')">🏢 Офис / Администратор</button>
-          <button class="btn-sm" onclick="qLoadPreset('remote')">🏠 Удалёнка / IT</button>
-        </div>
-        <div style="font-size:11px;color:var(--dim)">⚠️ Заменит текущие шаблоны. Отредактируй ответы под себя и нажми «Сохранить».</div>
-      </div>
-      <div class="q-templates" id="q-templates-list"></div>
-      <div class="q-default-row">
-        <label data-i18n="q_default_label">Ответ по умолчанию (если ни один шаблон не подошёл)</label>
-        <textarea id="q-default-answer" class="q-answer-input" rows="2"
-          placeholder="Готова рассказать подробнее на собеседовании." data-i18n-ph="q_default_ph"></textarea>
-      </div>
-      <div class="q-btn-row">
-        <button class="q-btn" onclick="qAddTemplate()" data-i18n="btn_add_template">＋ Добавить шаблон</button>
-        <button class="q-btn-save" onclick="qSave()" data-i18n="btn_save_templates">💾 Сохранить шаблоны</button>
-      </div>
-      <div class="q-status" id="q-status"></div>
-      </div>
-    </details>
-
-    <!-- LLM auto-reply -->
-    <details class="q-section prio-low" id="llm-section">
-      <summary class="q-section-title">🤖 LLM Авто-ответы<span class="prio-badge">Опционально</span></summary>
-      <div class="q-section-body">
-      <div style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.7">
-        Бот будет автоматически отвечать на сообщения работодателей в переговорах со статусом <b>Интервью</b>.
-        Используется OpenAI-совместимый API (GPT-4o-mini, DeepSeek и др.)
-      </div>
-      <div style="font-size:11px;color:var(--cyan);margin-bottom:10px">
-        💡 Включить/выключить авто-ответы — кнопка во вкладке <b>🤖 LLM Ответы</b>
-      </div>
-      <div style="display:flex;gap:14px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="llm-auto-send" style="accent-color:var(--green)" checked>
-          Отправлять автоматически (иначе только в лог)
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="llm-use-cover-letter" style="accent-color:var(--yellow)" checked>
-          Учитывать сопроводительное письмо
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="llm-use-resume" style="accent-color:var(--cyan)" checked>
-          Учитывать резюме
-        </label>
-      </div>
-      <div style="margin-bottom:12px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="llm-fill-questionnaire" style="accent-color:var(--purple,#c084fc)"
-                 onchange="send({type:'set_config',key:'llm_fill_questionnaire',value:this.checked})">
-          📝 Заполнять опросники нейронкой (textarea + radio + checkbox при откликах)
-        </label>
-        <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
-          Если включено — LLM сам отвечает на вопросы работодателя при отклике. Шаблоны используются как запасной вариант.
-        </div>
-      </div>
-      <div style="margin-bottom:12px">
-        <div style="font-size:11px;color:var(--dim);margin-bottom:6px">
-          Предпросмотр резюме — убедись что парсинг работает корректно:
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <select id="llm-resume-acc-sel" class="apply-input" style="font-size:11px;padding:3px 6px"></select>
-          <button class="btn-sm" onclick="llmPreviewResume(this)">📄 Загрузить резюме</button>
-          <span id="llm-resume-status" style="font-size:11px;color:var(--dim)"></span>
-        </div>
-        <pre id="llm-resume-preview" style="display:none;margin-top:8px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:220px;overflow-y:auto;color:var(--fg)"></pre>
-      </div>
-      <div style="margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-size:12px;font-weight:600">🔑 API профили</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <label style="font-size:11px;color:var(--dim)">Режим:</label>
-            <select id="llm-profile-mode" class="apply-input" style="font-size:11px;padding:2px 6px">
-              <option value="fallback">⬇️ Резерв (первый рабочий)</option>
-              <option value="roundrobin">🔁 По очереди</option>
-            </select>
-          </div>
-        </div>
-        <div style="font-size:10px;color:var(--dim);margin-bottom:8px">Ключи не отображаются из соображений безопасности — введите повторно при изменении.</div>
-        <div id="llm-profiles-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
-        <button class="btn-sm" onclick="llmProfileAdd()">＋ Добавить профиль</button>
-      </div>
-      <div style="margin-bottom:8px">
-        <div style="font-size:11px;color:var(--dim);margin-bottom:3px">Системный промпт</div>
-        <textarea id="llm-system-prompt" class="apply-input" rows="4" style="font-size:11px"></textarea>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn-sm" onclick="llmSave(this)">💾 Сохранить</button>
-        <span id="llm-status" style="font-size:11px;color:var(--dim)"></span>
-      </div>
-      </div>
-    </details>
+    <!-- ═══════ ГРУППА 1: Подключение ═══════ -->
+    <div class="settings-group-header">🔌 Подключение</div>
 
     <!-- Browser sessions -->
     <details class="q-section prio-critical" open>
-      <summary class="q-section-title" data-i18n="sec_sessions">🌐 Браузерные сессии<span class="prio-badge">Критично</span></summary>
+      <summary class="q-section-title" data-i18n="sec_sessions">🌐 Браузерные сессии</summary>
       <div class="q-section-body">
       <div id="sess-list" style="margin-bottom:12px"></div>
       <details class="session-block" id="session-block">
@@ -1370,9 +1317,289 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
           </div>
         </div>
       </details>
+      </div>
+    </details>
 
-      <!-- JSON Editor -->
-      <div class="q-section-title-plain" style="margin-top:18px">📋 JSON-редактор</div>
+    <!-- Account cookies update -->
+    <details class="q-section prio-high">
+      <summary class="q-section-title" data-i18n="sec_cookies">🔑 Обновить куки аккаунтов</summary>
+      <div class="q-section-body">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.7">
+        Вставьте новый <b>cURL</b> или строку <b>cookie: hhtoken=…</b> — куки обновятся сразу без перезапуска.<br>
+        Получить: <b>F12 → Network → любой запрос к hh.ru → правая кнопка → Copy as cURL</b>
+      </div>
+      <div id="acc-cookies-list"></div>
+      </div>
+    </details>
+
+    <!-- ═══════ ГРУППА 2: Поиск и отклики ═══════ -->
+    <div class="settings-group-header">🎯 Поиск и отклики</div>
+
+    <!-- Bot settings -->
+    <details class="q-section prio-medium" open>
+      <summary class="q-section-title" data-i18n="settings_title">⚙️ Параметры бота</summary>
+      <div class="q-section-body">
+        <div class="settings-grid" id="settings-grid"></div>
+        <button id="settings-apply" onclick="applySettings()" data-i18n="btn_apply_settings">✅ Применить</button>
+        <div id="settings-status"></div>
+      </div>
+    </details>
+
+    <!-- Work schedule filter + auto-tests -->
+    <details class="q-section prio-medium">
+      <summary class="q-section-title">🏢 Фильтры и автоматизация</summary>
+      <div class="q-section-body">
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">Умный поиск</div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="filter-agencies" style="accent-color:var(--cyan)"
+                   onchange="sendCmd({type:'set_config',key:'filter_agencies',value:this.checked})">
+            Исключить агентства
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="filter-low-comp" style="accent-color:var(--cyan)"
+                   onchange="sendCmd({type:'set_config',key:'filter_low_competition',value:this.checked})">
+            Только малоконкурентные (&lt;10 откликов)
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            Свежесть:
+            <select id="search-period" style="background:var(--bg-card2);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:2px 6px;font-size:12px;font-family:inherit"
+                    onchange="sendCmd({type:'set_config',key:'search_period_days',value:parseInt(this.value)})">
+              <option value="0">Все</option><option value="1">1 день</option><option value="3">3 дня</option><option value="7">7 дней</option><option value="14">14 дней</option><option value="30">30 дней</option>
+            </select>
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">
+          Фильтры добавляются к поисковым URL. Работают для веб-поиска и OAuth.
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:4px"></div>
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">Формат работы</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">
+          Отмечены = разрешены. Если ничего не отмечено — пропускаются все форматы (без фильтра).
+        </div>
+        <div id="schedule-checks" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" class="sched-cb" value="remote" style="accent-color:var(--green)"> Удалённая
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" class="sched-cb" value="fullDay" style="accent-color:var(--cyan)"> Полный день
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" class="sched-cb" value="flexible" style="accent-color:var(--yellow)"> Гибкий
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" class="sched-cb" value="shift" style="accent-color:var(--dim)"> Сменный
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" class="sched-cb" value="flyInFlyOut" style="accent-color:var(--red)"> Вахта
+          </label>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:4px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">Автопрохождение тестов</div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="auto-apply-tests" style="accent-color:var(--green)"
+                   onchange="sendCmd({type:'set_config',key:'auto_apply_tests',value:this.checked})">
+            Автоматически заполнять и отправлять опросники при откликах (для всех аккаунтов)
+          </label>
+          <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
+            Если включен LLM — вопросы заполнит нейронка. Иначе используются шаблонные ответы.
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:4px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">Пред-проверка вакансий</div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="skip-inconsistent" style="accent-color:var(--yellow)"
+                   onchange="sendCmd({type:'set_config',key:'skip_inconsistent',value:this.checked})">
+            Пропускать вакансии с несовпадением опыта (pre-check перед откликом)
+          </label>
+          <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
+            Делает дополнительный запрос к HH для каждой вакансии. Замедляет отклики, но пропускает неподходящие.
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--red)">🛑 Контроль лимитов</div>
+          <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+              Дневной лимит:
+              <input type="number" id="daily-apply-limit" class="apply-input" style="width:70px;font-size:12px;padding:2px 6px" min="0" max="500" value="0"
+                onchange="sendCmd({type:'set_config',key:'daily_apply_limit',value:parseInt(this.value)||0})">
+              <span style="font-size:11px;color:var(--dim)">(0 = без лимита)</span>
+            </label>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="stop-on-hh-limit" style="accent-color:var(--red)" checked
+                   onchange="sendCmd({type:'set_config',key:'stop_on_hh_limit',value:this.checked})">
+            Полная остановка при лимите HH (не перепроверять, ждать до завтра)
+          </label>
+          <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
+            Если включено — бот ставит паузу при лимите. Снимите паузу вручную или дождитесь 00:00 МСК.
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--green)">🔑 Метод откликов</div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="use-oauth-apply" style="accent-color:var(--green)"
+                   onchange="sendCmd({type:'set_config',key:'use_oauth_apply',value:this.checked})">
+            OAuth API (через токен Android-приложения — без капчи, чистый JSON)
+          </label>
+          <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
+            Если выключено — отклики через Web (cookies). OAuth быстрее и не требует капчи, но один запрос за раз (не пакетом).
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- URL pool -->
+    <details class="q-section prio-medium">
+      <summary class="q-section-title" data-i18n="sec_url_pool">🔗 Пул поисковых запросов</summary>
+      <div class="q-section-body">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:12px">
+        Добавьте URL-адреса поиска вакансий — они появятся как чекбоксы на карточке каждого аккаунта.
+        Поле <b>стр.</b> задаёт глубину поиска (кол-во страниц) для конкретного запроса; если пусто — используется глобальное значение из слайдера выше.
+      </div>
+      <div id="url-pool-rows"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+        <button class="btn-sm" onclick="urlPoolAddRow()" data-i18n="btn_add_url">＋ Добавить URL</button>
+        <button class="btn-sm" onclick="urlPoolSave(this)" data-i18n="btn_save_pool">💾 Сохранить пул</button>
+        <span id="url-pool-st" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      </div>
+    </details>
+
+    <!-- ═══════ ГРУППА 3: Шаблоны ═══════ -->
+    <div class="settings-group-header">📋 Шаблоны</div>
+
+    <!-- Letter templates -->
+    <details class="q-section prio-low">
+      <summary class="q-section-title" data-i18n="sec_letters">✉️ Шаблоны писем</summary>
+      <div class="q-section-body">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:12px" data-i18n="sec_letters_desc">
+        Создайте именованные шаблоны — они появятся в выпадающем списке на каждой карточке аккаунта.
+      </div>
+      <div class="q-templates" id="lt-templates-list"></div>
+      <div class="q-btn-row">
+        <button class="q-btn" onclick="ltAddTemplate()" data-i18n="btn_add_template">＋ Добавить шаблон</button>
+        <button class="q-btn-save" onclick="ltSave()" data-i18n="btn_save_templates">💾 Сохранить шаблоны</button>
+      </div>
+      <div class="q-status" id="lt-status"></div>
+      </div>
+    </details>
+
+    <!-- Questionnaire templates -->
+    <details class="q-section prio-low">
+      <summary class="q-section-title" data-i18n="sec_questionnaire">📝 Шаблонные ответы на опросы</summary>
+      <div class="q-section-body">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:10px" data-i18n="sec_questionnaire_desc">
+        Когда вакансия требует опрос — бот автоматически заполнит его.
+        Для каждого шаблона укажи ключевые слова (через запятую) и ответ.
+        Первый совпавший шаблон используется. Последний — ответ по умолчанию.
+      </div>
+      <div style="margin-bottom:14px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--cyan)">🚀 Загрузить готовые пресеты</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="qLoadPreset('universal')">🌐 Универсальный</button>
+          <button class="btn-sm" onclick="qLoadPreset('sales')">💼 Продажи / КЦ</button>
+          <button class="btn-sm" onclick="qLoadPreset('office')">🏢 Офис / Администратор</button>
+          <button class="btn-sm" onclick="qLoadPreset('remote')">🏠 Удалёнка / IT</button>
+        </div>
+        <div style="font-size:11px;color:var(--dim)">⚠️ Заменит текущие шаблоны. Отредактируй ответы под себя и нажми «Сохранить».</div>
+      </div>
+      <div class="q-templates" id="q-templates-list"></div>
+      <div class="q-default-row">
+        <label data-i18n="q_default_label">Ответ по умолчанию (если ни один шаблон не подошёл)</label>
+        <textarea id="q-default-answer" class="q-answer-input" rows="2"
+          placeholder="Готова рассказать подробнее на собеседовании." data-i18n-ph="q_default_ph"></textarea>
+      </div>
+      <div class="q-btn-row">
+        <button class="q-btn" onclick="qAddTemplate()" data-i18n="btn_add_template">＋ Добавить шаблон</button>
+        <button class="q-btn-save" onclick="qSave()" data-i18n="btn_save_templates">💾 Сохранить шаблоны</button>
+      </div>
+      <div class="q-status" id="q-status"></div>
+      </div>
+    </details>
+
+    <!-- ═══════ ГРУППА 4: AI ═══════ -->
+    <div class="settings-group-header">🤖 AI / LLM</div>
+
+    <!-- LLM auto-reply -->
+    <details class="q-section prio-low" id="llm-section">
+      <summary class="q-section-title">🤖 LLM Авто-ответы</summary>
+      <div class="q-section-body">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.7">
+        Бот будет автоматически отвечать на сообщения работодателей в переговорах со статусом <b>Интервью</b>.
+        Используется OpenAI-совместимый API (GPT-4o-mini, DeepSeek и др.)
+      </div>
+      <div style="font-size:11px;color:var(--cyan);margin-bottom:10px">
+        💡 Включить/выключить авто-ответы — кнопка во вкладке <b>🤖 LLM Ответы</b>
+      </div>
+      <div style="display:flex;gap:14px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="llm-auto-send" style="accent-color:var(--green)" checked>
+          Отправлять автоматически (иначе только в лог)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="llm-use-cover-letter" style="accent-color:var(--yellow)" checked>
+          Учитывать сопроводительное письмо
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="llm-use-resume" style="accent-color:var(--cyan)" checked>
+          Учитывать резюме
+        </label>
+      </div>
+      <div style="margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="llm-fill-questionnaire" style="accent-color:var(--purple,#c084fc)"
+                 onchange="sendCmd({type:'set_config',key:'llm_fill_questionnaire',value:this.checked})">
+          📝 Заполнять опросники нейронкой (textarea + radio + checkbox при откликах)
+        </label>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px;margin-left:22px">
+          Если включено — LLM сам отвечает на вопросы работодателя при отклике. Шаблоны используются как запасной вариант.
+        </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;color:var(--dim);margin-bottom:6px">
+          Предпросмотр резюме — убедись что парсинг работает корректно:
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="llm-resume-acc-sel" class="apply-input" style="font-size:11px;padding:3px 6px"></select>
+          <button class="btn-sm" onclick="llmPreviewResume(this)">📄 Загрузить резюме</button>
+          <span id="llm-resume-status" style="font-size:11px;color:var(--dim)"></span>
+        </div>
+        <pre id="llm-resume-preview" style="display:none;margin-top:8px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px;white-space:pre-wrap;max-height:220px;overflow-y:auto;color:var(--fg)"></pre>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:600">🔑 API профили</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="font-size:11px;color:var(--dim)">Режим:</label>
+            <select id="llm-profile-mode" class="apply-input" style="font-size:11px;padding:2px 6px">
+              <option value="fallback">⬇️ Резерв (первый рабочий)</option>
+              <option value="roundrobin">🔁 По очереди</option>
+            </select>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--dim);margin-bottom:8px">Ключи не отображаются из соображений безопасности — введите повторно при изменении.</div>
+        <div id="llm-profiles-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
+        <button class="btn-sm" onclick="llmProfileAdd()">＋ Добавить профиль</button>
+      </div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:11px;color:var(--dim);margin-bottom:3px">Системный промпт</div>
+        <textarea id="llm-system-prompt" class="apply-input" rows="4" style="font-size:11px"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-sm" onclick="llmSave(this)">💾 Сохранить</button>
+        <span id="llm-status" style="font-size:11px;color:var(--dim)"></span>
+      </div>
+      </div>
+    </details>
+
+    <!-- ═══════ ГРУППА 5: Продвинутое ═══════ -->
+    <div class="settings-group-header">🔧 Продвинутое</div>
+
+    <!-- JSON Editor -->
+    <details class="q-section prio-low">
+      <summary class="q-section-title">📋 JSON-редактор</summary>
+      <div class="q-section-body">
       <div style="font-size:11px;color:var(--dim);margin-bottom:10px">
         Прямое редактирование конфигов. Изменения применяются сразу после сохранения.
       </div>
@@ -1406,6 +1633,7 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
       </details>
       </div>
     </details>
+
   </div>
 </div>
 
@@ -1982,7 +2210,7 @@ function ltRenderTemplates(templates) {
     row.className = 'q-template-row';
     row.dataset.idx = i;
     row.innerHTML =
-      `<button class="q-del-btn" onclick="ltDelTemplate(${i})">✕</button>` +
+      `<button class="q-del" onclick="ltDelTemplate(${i})">✕</button>` +
       `<div style="flex:1">` +
         `<input class="q-keywords-input" placeholder="Название шаблона (напр: IT, Аналитик)" value="${esc(t.name||'')}">` +
         `<textarea class="q-answer-input" rows="3" placeholder="Текст письма...">${esc(t.text||'')}</textarea>` +
@@ -1999,7 +2227,7 @@ function ltAddTemplate() {
   row.className = 'q-template-row';
   row.dataset.idx = i;
   row.innerHTML =
-    `<button class="q-del-btn" onclick="ltDelTemplate(${i})">✕</button>` +
+    `<button class="q-del" onclick="ltDelTemplate(${i})">✕</button>` +
     `<div style="flex:1">` +
       `<input class="q-keywords-input" placeholder="Название шаблона">` +
       `<textarea class="q-answer-input" rows="3" placeholder="Текст письма..."></textarea>` +
@@ -2015,7 +2243,7 @@ function ltDelTemplate(idx) {
   // Re-index delete buttons
   list.querySelectorAll('.q-template-row').forEach((r, i) => {
     r.dataset.idx = i;
-    const btn = r.querySelector('.q-del-btn');
+    const btn = r.querySelector('.q-del');
     if (btn) btn.onclick = () => ltDelTemplate(i);
   });
 }
@@ -2238,6 +2466,47 @@ function syncLlmSettings(snap) {
   }
 }
 
+// ── Schedule filter & auto-tests sync ────────────────────────
+let _schedInited = false;
+function syncScheduleSettings(snap) {
+  const cfg = snap?.config || {};
+  // Sync schedule checkboxes
+  if (cfg.allowed_schedules !== undefined) {
+    document.querySelectorAll('.sched-cb').forEach(cb => {
+      cb.checked = cfg.allowed_schedules.includes(cb.value);
+    });
+  }
+  // Bind onchange only once
+  if (!_schedInited) {
+    _schedInited = true;
+    document.querySelectorAll('.sched-cb').forEach(cb => {
+      cb.onchange = () => {
+        const checked = [...document.querySelectorAll('.sched-cb:checked')].map(c => c.value);
+        sendCmd({type: 'set_config', key: 'allowed_schedules', value: checked});
+      };
+    });
+  }
+  // Auto-tests
+  const at = document.getElementById('auto-apply-tests');
+  if (at && cfg.auto_apply_tests !== undefined) at.checked = cfg.auto_apply_tests;
+  const oa = document.getElementById('use-oauth-apply');
+  if (oa && cfg.use_oauth_apply !== undefined) oa.checked = cfg.use_oauth_apply;
+  const dal = document.getElementById('daily-apply-limit');
+  if (dal && cfg.daily_apply_limit !== undefined) dal.value = cfg.daily_apply_limit;
+  const sohl = document.getElementById('stop-on-hh-limit');
+  if (sohl && cfg.stop_on_hh_limit !== undefined) sohl.checked = cfg.stop_on_hh_limit;
+  // Skip inconsistent
+  const si = document.getElementById('skip-inconsistent');
+  if (si && cfg.skip_inconsistent !== undefined) si.checked = cfg.skip_inconsistent;
+  // Smart search filters
+  const fa = document.getElementById('filter-agencies');
+  if (fa && cfg.filter_agencies !== undefined) fa.checked = cfg.filter_agencies;
+  const flc = document.getElementById('filter-low-comp');
+  if (flc && cfg.filter_low_competition !== undefined) flc.checked = cfg.filter_low_competition;
+  const sp = document.getElementById('search-period');
+  if (sp && cfg.search_period_days !== undefined) sp.value = cfg.search_period_days;
+}
+
 // ── LLM resume preview ───────────────────────────────────────
 async function llmPreviewResume(btn) {
   const sel = document.getElementById('llm-resume-acc-sel');
@@ -2267,6 +2536,10 @@ async function llmPreviewResume(btn) {
 // ── LLM per-account toggle ────────────────────────────────────
 function llmToggleAccount(idx, btn) {
   sendCmd({type: 'account_llm', idx});
+}
+
+function oauthToggleAccount(idx, btn) {
+  sendCmd({type: 'account_oauth', idx});
 }
 
 // ── LLM tab: interviews from DB ───────────────────────────────
@@ -2655,7 +2928,7 @@ async function urlPoolSave(btn) {
   if (btn) btn.disabled = true;
   if (st) { st.textContent = '⏳...'; st.style.color = 'var(--dim)'; }
   try {
-    send({type: 'set_url_pool', urls});
+    sendCmd({type: 'set_url_pool', urls});
     if (st) { st.textContent = `✅ Сохранено (${urls.length} URL)`; st.style.color = 'var(--green)'; }
   } catch(e) {
     if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
@@ -2684,7 +2957,7 @@ function urlPoolBuild(snap) {
 // ── URL selector on account cards ────────────────────────────
 function syncAccUrlChecks(snap) {
   const pool = snap?.config?.url_pool || [];
-  (snap?.accounts || []).filter(a => !a.temp).forEach(acc => {
+  (snap?.accounts || []).forEach(acc => {
     const container = document.getElementById(`acc-url-checks-${acc.idx}`);
     const wrap = document.getElementById(`acc-url-wrap-${acc.idx}`);
     if (!container || (wrap && wrap.open)) return; // don't overwrite while user is choosing
@@ -2706,7 +2979,7 @@ function syncAccUrlChecks(snap) {
       return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
         <label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer;font-size:11px;flex:1;min-width:0">
           <input type="checkbox" value="${esc(url)}" ${checked} style="margin-top:2px;flex-shrink:0">
-          <span style="color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${badge}${countInfo}</span>
+          <span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${badge}${countInfo}</span>
         </label>
         <input type="number" class="apply-input acc-url-pages-inp" data-url="${esc(url)}"
           min="1" max="200" placeholder="${poolPages}"
@@ -2950,8 +3223,8 @@ async function updateAccCookies(idx) {
   const ta = document.getElementById('ck-ta-' + idx);
   const st = document.getElementById('ck-st-' + idx);
   const val = ta?.value.trim();
-  if (!val) { st.textContent = '❌ Пусто'; st.style.color = 'var(--red)'; return; }
-  st.textContent = '⏳ Обновляю...'; st.style.color = 'var(--dim)';
+  if (!val) { if (st) { st.textContent = '❌ Пусто'; st.style.color = 'var(--red)'; } return; }
+  if (st) { st.textContent = '⏳ Обновляю...'; st.style.color = 'var(--dim)'; }
   try {
     const res = await fetch(`/api/account/${idx}/update_cookies`, {
       method: 'POST',
@@ -2960,16 +3233,13 @@ async function updateAccCookies(idx) {
     });
     const data = await res.json();
     if (data.ok) {
-      ta.value = '';
-      st.textContent = `✅ Обновлено (${(data.keys||[]).length} ключей)`;
-      st.style.color = 'var(--green)';
+      if (ta) ta.value = '';
+      if (st) { st.textContent = `✅ Обновлено (${(data.keys||[]).length} ключей)`; st.style.color = 'var(--green)'; }
     } else {
-      st.textContent = '❌ ' + (data.error || 'Ошибка');
-      st.style.color = 'var(--red)';
+      if (st) { st.textContent = '❌ ' + (data.error || 'Ошибка'); st.style.color = 'var(--red)'; }
     }
   } catch(e) {
-    st.textContent = '❌ ' + e;
-    st.style.color = 'var(--red)';
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
   }
 }
 
@@ -3020,7 +3290,7 @@ function connect() {
     }, State.reconnectDelay);
   };
 
-  ws.onerror = () => { ws.close(); };
+  ws.onerror = (e) => { console.error('WS error:', e); ws.close(); };
 }
 
 function sendCmd(obj) {
@@ -3036,6 +3306,8 @@ function renderAll(snap) {
   syncLetterSelects(snap);
   syncAccUrlChecks(snap);
   syncLlmSettings(snap);
+  syncScheduleSettings(snap);
+  syncAuditSelector(snap);
   updatePageTitle(snap);
   checkNotifications(snap);
   if (State.currentTab === 'main') renderMain(snap);
@@ -3107,14 +3379,63 @@ function renderHeader(snap) {
   document.getElementById('storage-total').textContent = snap.global_stats.storage_total;
   document.getElementById('storage-tests').textContent = snap.global_stats.storage_tests;
 
+  // Daily counter
+  const dailyEl = document.getElementById('hdr-daily-counter');
+  if (dailyEl) {
+    const accs = snap.accounts || [];
+    const totalDaily = accs.reduce((s, a) => s + (a.daily_sent || 0), 0);
+    const limit = snap.config?.daily_apply_limit || 0;
+    const stopped = accs.some(a => a.hard_stopped);
+    if (limit > 0) {
+      dailyEl.textContent = `(${totalDaily}/${limit} сегодня)`;
+      dailyEl.style.color = totalDaily >= limit ? 'var(--red)' : 'var(--yellow)';
+    } else if (totalDaily > 0) {
+      dailyEl.textContent = `(${totalDaily} сегодня)`;
+      dailyEl.style.color = stopped ? 'var(--red)' : 'var(--yellow)';
+    } else {
+      dailyEl.textContent = '';
+    }
+  }
+
+  // Smart search filter badges
+  const filterEl = document.getElementById('hdr-filters');
+  if (filterEl && snap.config) {
+    const badges = [];
+    if (snap.config.filter_agencies) badges.push('🏢 Без агентств');
+    if (snap.config.filter_low_competition) badges.push('🎯 <10 откликов');
+    if (snap.config.search_period_days > 0) badges.push(`📅 ${snap.config.search_period_days}д`);
+    if (snap.config.skip_inconsistent) badges.push('⚡ Пре-чек');
+    filterEl.innerHTML = badges.map(b => `<span style="background:rgba(57,208,216,0.12);color:var(--cyan);padding:1px 6px;border-radius:3px;font-size:9px">${b}</span>`).join(' ');
+  }
+
   const btn = document.getElementById('pause-btn');
-  if (snap.paused) {
-    btn.textContent = t('btn_resume');
-    btn.classList.add('paused');
-  } else {
-    const pausedAccs = (snap.accounts || []).filter(a => a.paused).length;
-    btn.textContent = pausedAccs ? `${t('btn_pause')} (${pausedAccs})` : t('btn_pause');
-    btn.classList.remove('paused');
+  if (btn) {
+    if (snap.paused) {
+      btn.textContent = t('btn_resume');
+      btn.classList.add('paused');
+    } else {
+      const pausedAccs = (snap.accounts || []).filter(a => a.paused).length;
+      btn.textContent = pausedAccs ? `${t('btn_pause')} (${pausedAccs})` : t('btn_pause');
+      btn.classList.remove('paused');
+    }
+  }
+
+  // Apply mode badge — show per-account summary
+  const modeBadge = document.getElementById('apply-mode-badge');
+  if (modeBadge) {
+    const accs = snap.accounts || [];
+    const oauthCount = accs.filter(a => a.use_oauth).length;
+    const globalOAuth = snap.config?.use_oauth_apply;
+    if (oauthCount > 0 || globalOAuth) {
+      const label = globalOAuth ? '🔑 OAuth (все)' : `🔑 OAuth (${oauthCount}/${accs.length})`;
+      modeBadge.textContent = label;
+      modeBadge.style.background = 'rgba(63,185,80,0.15)';
+      modeBadge.style.color = 'var(--green)';
+    } else {
+      modeBadge.textContent = '🌐 Web';
+      modeBadge.style.background = 'rgba(57,208,216,0.15)';
+      modeBadge.style.color = 'var(--cyan)';
+    }
   }
 }
 
@@ -3177,6 +3498,8 @@ function buildCardHTML(acc) {
       <button class="compact-btn" title="Свернуть/развернуть карточку" onclick="toggleCompact(${acc.idx})">⬜</button>
       <button class="compact-btn" title="Удалить аккаунт" style="color:var(--red);margin-left:2px" onclick="accDeleteCard(${acc.idx}, this)">🗑</button>
       <div class="acc-status-badge status-idle" id="acc-badge-${acc.idx}">⏸ ${t('status_idle')}</div>
+      <button id="acc-oauth-btn-${acc.idx}" style="font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid;cursor:pointer;background:transparent;margin-left:4px;color:${acc.use_oauth ? 'var(--green)' : 'var(--cyan)'};border-color:${acc.use_oauth ? 'var(--green)' : 'var(--cyan)'}"
+        onclick="oauthToggleAccount(${acc.idx},this)" title="Метод откликов: OAuth API или Web cookies">${acc.use_oauth ? '🔑API' : '🌐Web'}</button>
     </div>
     <div class="acc-progress"><div class="acc-progress-fill" id="acc-prog-${acc.idx}"></div></div>
     <div class="acc-stats">
@@ -3244,7 +3567,7 @@ function buildCardHTML(acc) {
       <button class="btn-sm"
         onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
       <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
-        onclick="llmToggleAccount(${acc.idx},this)" title="Вкл/выкл LLM авто-ответы для этого аккаунта">🤖 ВКЛ</button>
+        onclick="llmToggleAccount(${acc.idx},this)" title="LLM авто-ответы на сообщения HR">💬 Ответы</button>
       ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
       ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
     </div>
@@ -3271,6 +3594,38 @@ function buildCardHTML(acc) {
         <div style="display:flex;gap:6px;align-items:center">
           <button class="btn-sm" onclick="urlAccSave(${acc.idx},this)">${t('btn_apply_url')}</button>
           <span id="url-acc-st-${acc.idx}" style="font-size:11px;color:var(--dim)"></span>
+        </div>
+      </div>
+    </details>
+    <details class="acc-letter-wrap">
+      <summary>🧠 Умные фильтры</summary>
+      <div class="acc-letter-body" style="font-size:11px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:8px">
+          <label style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" class="smart-filter-cb" data-key="filter_low_competition" style="accent-color:var(--green)"> 🎯 <10 откликов
+          </label>
+          <label style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" class="smart-filter-cb" data-key="filter_agencies" style="accent-color:var(--yellow)"> 🏢 Без агентств
+          </label>
+          <label style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" class="smart-filter-cb" data-key="skip_inconsistent" style="accent-color:var(--cyan)"> ⚡ Пре-чек опыта
+          </label>
+          <label style="cursor:pointer;display:flex;align-items:center;gap:4px">
+            <input type="checkbox" class="smart-filter-cb" data-key="auto_apply_tests" style="accent-color:var(--magenta)"> 🧪 Авто-тесты
+          </label>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:4px">📅 Свежесть:
+            <select class="smart-filter-sel" data-key="search_period_days" style="font-size:10px;padding:1px 4px">
+              <option value="0">Все</option><option value="1">1д</option><option value="3">3д</option><option value="7">7д</option><option value="14">14д</option>
+            </select>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px">🛑 Лимит/день:
+            <input type="number" class="smart-filter-num" data-key="daily_apply_limit" min="0" max="500" style="width:50px;font-size:10px;padding:1px 4px" placeholder="0">
+          </label>
+        </div>
+        <div style="color:var(--dim);font-size:10px;line-height:1.5">
+          💡 Из анализа 14К переговоров: удалёнка 74%, junior 78%, аналитик 100%, IT-аккред. только 17% интервью
         </div>
       </div>
     </details>
@@ -3356,8 +3711,9 @@ function updateCard(card, acc) {
   }
 
   // Stats
+  const dailyInfo = acc.daily_limit > 0 ? ` (${acc.daily_sent || 0}/${acc.daily_limit} сегодня)` : (acc.daily_sent ? ` (${acc.daily_sent} сегодня)` : '');
   setText('acc-sent-' + acc.idx, acc.sent);
-  setText('acc-total-' + acc.idx, acc.total_applied ?? '');
+  setText('acc-total-' + acc.idx, (acc.total_applied ?? '') + dailyInfo);
   setText('acc-tests-' + acc.idx, acc.tests);
   setText('acc-already-' + acc.idx, acc.already_applied);
   setText('acc-err-' + acc.idx, acc.errors);
@@ -3472,11 +3828,13 @@ function updateCard(card, acc) {
       const intrvStr = total > recent
         ? `<span style="color:#f0c060">🎯 ${recent}</span><span class="c-dim"> (${total} всего)</span>`
         : `<span style="color:#f0c060">🎯 ${recent}</span>`;
+      const unreadStr = acc.hh_unread_by_employer ? ` &nbsp;<span class="c-blue">📨 ${acc.hh_unread_by_employer} HR не чит.</span>` : '';
       hh.innerHTML =
         intrvStr + ` ${t('hh_interviews')} &nbsp;` +
         `<span class="c-yellow">👁 ${acc.hh_viewed}</span> ${t('hh_viewed')} &nbsp;` +
-        `<span class="c-red">❌ ${acc.hh_discards}</span> ${t('hh_discards')} &nbsp;` +
-        `<span class="c-dim">(${acc.hh_stats_updated})</span>`;
+        `<span class="c-red">❌ ${acc.hh_discards}</span> ${t('hh_discards')}` +
+        unreadStr +
+        ` &nbsp;<span class="c-dim">(${acc.hh_stats_updated})</span>`;
     } else {
       hh.textContent = acc.hh_stats_loading ? '⏳ HH...' : '—';
     }
@@ -3544,10 +3902,46 @@ function updateCard(card, acc) {
   const llmBtn = document.getElementById('acc-llm-btn-' + acc.idx);
   if (llmBtn) {
     const enabled = acc.llm_enabled !== false; // default true
-    llmBtn.textContent = enabled ? '🤖 ВКЛ' : '🤖 ВЫКЛ';
+    llmBtn.textContent = enabled ? '💬 Ответы ✅' : '💬 Ответы ❌';
     llmBtn.classList.toggle('llm-on', enabled);
     llmBtn.classList.toggle('llm-off', !enabled);
   }
+  const oauthBtn = document.getElementById('acc-oauth-btn-' + acc.idx);
+  if (oauthBtn) {
+    const oauth = !!acc.use_oauth;
+    oauthBtn.textContent = oauth ? '🔑API' : '🌐Web';
+    oauthBtn.style.color = oauth ? 'var(--green)' : 'var(--cyan)';
+    oauthBtn.style.borderColor = oauth ? 'var(--green)' : 'var(--cyan)';
+  }
+
+  // Smart filters sync (global config → card checkboxes)
+  const cfg = State.lastSnapshot?.config || {};
+  card.querySelectorAll('.smart-filter-cb').forEach(cb => {
+    const key = cb.dataset.key;
+    if (cfg[key] !== undefined) cb.checked = cfg[key];
+    if (!cb._bound) {
+      cb._bound = true;
+      cb.onchange = () => sendCmd({type: 'set_config', key, value: cb.checked});
+    }
+  });
+  card.querySelectorAll('.smart-filter-sel').forEach(sel => {
+    const key = sel.dataset.key;
+    if (cfg[key] !== undefined) sel.value = cfg[key];
+    if (!sel._bound) {
+      sel._bound = true;
+      sel.onchange = () => sendCmd({type: 'set_config', key, value: parseInt(sel.value) || 0});
+    }
+  });
+  card.querySelectorAll('.smart-filter-num').forEach(inp => {
+    const key = inp.dataset.key;
+    if (cfg[key] !== undefined && !inp._focused) inp.value = cfg[key] || '';
+    if (!inp._bound) {
+      inp._bound = true;
+      inp.onfocus = () => { inp._focused = true; };
+      inp.onblur = () => { inp._focused = false; };
+      inp.onchange = () => sendCmd({type: 'set_config', key, value: parseInt(inp.value) || 0});
+    }
+  });
 }
 
 function renderGlobalStats(snap) {
@@ -3663,6 +4057,7 @@ function renderHH(snap) {
         <div class="hh-counter"><div class="hh-counter-val c-yellow">${acc.hh_viewed}</div><div class="hh-counter-lbl">${t('hh_viewed')}</div></div>
         <div class="hh-counter"><div class="hh-counter-val c-red">${acc.hh_discards}</div><div class="hh-counter-lbl">${t('hh_discards')}</div></div>
         <div class="hh-counter"><div class="hh-counter-val c-dim">${acc.hh_not_viewed}</div><div class="hh-counter-lbl">${t('hh_not_viewed')}</div></div>
+        ${acc.hh_unread_by_employer ? `<div class="hh-counter"><div class="hh-counter-val c-blue">${acc.hh_unread_by_employer}</div><div class="hh-counter-lbl">HR не чит.</div></div>` : ''}
       </div>`;
       body += `<div class="c-dim" style="font-size:11px;margin-bottom:10px">${t('hh_updated')} ${acc.hh_stats_updated}</div>`;
 
@@ -3693,7 +4088,7 @@ function renderHH(snap) {
       }
     }
 
-    const colorStyle = `color:var(--${acc.color === 'magenta' ? 'magenta' : acc.color})`;
+    const colorStyle = `color:var(--${acc.color === 'magenta' ? 'magenta' : acc.color || 'text'})`;
     return `
       <div class="hh-account-block">
         <div class="hh-account-title" style="${colorStyle}">${esc(acc.name)}</div>
@@ -3788,6 +4183,7 @@ function appliedShowMore() {
 
 function appliedFillTable(items) {
   const tbody = document.getElementById('applied-tbody');
+  if (!tbody) return;
   tbody.innerHTML = items.map(item => {
     const dt = item.at
       ? new Date(item.at).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})
@@ -3903,6 +4299,7 @@ function dbShowMore() {
 
 function dbFillTable(items) {
   const tbody = document.getElementById('db-tbody');
+  if (!tbody) return;
   tbody.innerHTML = items.map(item => {
     const [icon, labelKey, cls] = DB_STATUS[item.status] || ['❓', null, 'c-dim'];
     const label = labelKey ? t(labelKey) : item.status;
@@ -4067,14 +4464,14 @@ function colorVar(color) {
 let _sessMode = 'curl';
 function sessSetMode(mode) {
   _sessMode = mode;
-  document.getElementById('sess-panel-curl').style.display   = mode === 'curl'   ? '' : 'none';
-  document.getElementById('sess-panel-manual').style.display = mode === 'manual' ? '' : 'none';
-  const btnCurl   = document.getElementById('sess-mode-curl');
+  const panelCurl = document.getElementById('sess-panel-curl');
+  const panelManual = document.getElementById('sess-panel-manual');
+  if (panelCurl) panelCurl.style.display = mode === 'curl' ? '' : 'none';
+  if (panelManual) panelManual.style.display = mode === 'manual' ? '' : 'none';
+  const btnCurl = document.getElementById('sess-mode-curl');
   const btnManual = document.getElementById('sess-mode-manual');
-  btnCurl.style.background   = mode === 'curl'   ? 'var(--cyan)' : 'transparent';
-  btnCurl.style.color        = mode === 'curl'   ? '#000'        : 'var(--dim)';
-  btnManual.style.background = mode === 'manual' ? 'var(--cyan)' : 'transparent';
-  btnManual.style.color      = mode === 'manual' ? '#000'        : 'var(--dim)';
+  if (btnCurl) { btnCurl.style.background = mode === 'curl' ? 'var(--cyan)' : 'transparent'; btnCurl.style.color = mode === 'curl' ? '#000' : 'var(--dim)'; }
+  if (btnManual) { btnManual.style.background = mode === 'manual' ? 'var(--cyan)' : 'transparent'; btnManual.style.color = mode === 'manual' ? '#000' : 'var(--dim)'; }
 }
 
 // ── Session Add ───────────────────────────────────────────────
@@ -4253,14 +4650,15 @@ function applyPickTemplate(idx) {
 
 function applyShowResult(msg, type) {
   const el = document.getElementById('apply-result');
+  if (!el) return;
   el.style.display = '';
   el.className = 'apply-result ' + type;
   el.innerHTML = msg;
 }
 
 function applyHideQuestionnaire() {
-  document.getElementById('apply-questionnaire').style.display = 'none';
-  document.getElementById('apply-questionnaire').innerHTML = '';
+  const el = document.getElementById('apply-questionnaire');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
 
 async function applyCheck() {
@@ -4310,6 +4708,7 @@ async function applyCheck() {
 
 function applyRenderQuestionnaire(data) {
   const el = document.getElementById('apply-questionnaire');
+  if (!el) return;
   el.style.display = '';
   const qs = data.questions || [];
 
@@ -4458,6 +4857,524 @@ async function loadViews() {
         loadViewHistory(acc.idx).finally(() => { histEl.removeAttribute('data-loading'); });
       }
     }
+  }
+}
+
+// ── Resume Audit ─────────────────────────────────────────────
+let _auditSelPopulated = false;
+function syncAuditSelector(snap) {
+  const sel = document.getElementById('audit-acc-sel');
+  if (!sel || _auditSelPopulated) return;
+  const accs = snap?.accounts || [];
+  if (!accs.length) return;
+  sel.innerHTML = accs.map(a => `<option value="${a.idx}">${esc(a.short || a.name)}</option>`).join('');
+  _auditSelPopulated = true;
+}
+
+async function runResumeAudit(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('audit-status');
+  const res = document.getElementById('audit-result');
+  if (!sel || !res) return;
+  const idx = sel.value;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Анализирую...'; st.style.color = 'var(--dim)'; }
+  res.style.display = 'none';
+  try {
+    const extraTerms = (document.getElementById('audit-extra-terms')?.value || '').trim();
+    const qs = extraTerms ? `?extra_terms=${encodeURIComponent(extraTerms)}` : '';
+    const r = await fetch(`/api/account/${idx}/resume_audit${qs}`);
+    const data = await r.json();
+    if (data.error) {
+      if (st) { st.textContent = '❌ ' + data.error; st.style.color = 'var(--red)'; }
+      return;
+    }
+    if (st) st.textContent = '';
+    res.style.display = '';
+    res.innerHTML = renderAuditResult(data);
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderAuditResult(d) {
+  const levelIcon = {critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: 'ℹ️'};
+  const levelOrder = {critical: 0, high: 1, medium: 2, low: 3, info: 4};
+  const issues = (d.issues || []).sort((a, b) => (levelOrder[a.level] ?? 5) - (levelOrder[b.level] ?? 5));
+
+  const expYears = Math.floor((d.total_experience_months || 0) / 12);
+  const expMonths = (d.total_experience_months || 0) % 12;
+  const expStr = expYears ? `${expYears} г. ${expMonths ? expMonths + ' м.' : ''}` : `${expMonths} м.`;
+
+  const statusColors = {
+    'not_looking_for_job': 'var(--red)',
+    'looking_for_offers': 'var(--yellow)',
+    'actively_searching': 'var(--green)',
+  };
+  const statusColor = statusColors[d.job_search_status] || 'var(--dim)';
+
+  const pctColor = (d.percent || 0) >= 80 ? 'var(--green)' : (d.percent || 0) >= 60 ? 'var(--yellow)' : 'var(--red)';
+
+  let html = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px">
+      <div style="font-size:14px;font-weight:700;margin-bottom:8px">${esc(d.name || '?')}</div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">${esc(d.title || '')}</div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-bottom:14px">
+        <div class="audit-card">
+          <div class="audit-label">Статус поиска</div>
+          <div style="color:${statusColor};font-weight:600">${esc(d.job_search_status_label || '?')}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Заполненность</div>
+          <div style="color:${pctColor};font-weight:600">${d.percent || 0}%</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Опыт</div>
+          <div>${expStr}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Зарплата</div>
+          <div>${d.salary ? d.salary + ' ₽' : '<span style="color:var(--red)">не указана</span>'}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Фото</div>
+          <div>${d.has_photo ? '<span style="color:var(--green)">Есть</span>' : '<span style="color:var(--red)">Нет</span>'}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Статус резюме</div>
+          <div style="color:${d.status === 'published' ? 'var(--green)' : 'var(--red)'}">${esc(d.status || '?')}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;font-size:12px">
+        <div><span style="color:var(--dim)">Формат:</span> ${(d.work_formats || []).join(', ') || '—'}</div>
+        <div><span style="color:var(--dim)">График:</span> ${(d.work_schedule || []).join(', ') || '—'}</div>
+        <div><span style="color:var(--dim)">Занятость:</span> ${(d.employment || []).join(', ') || '—'}</div>
+        <div><span style="color:var(--dim)">Роли:</span> ${(d.roles || []).map(r => esc(r)).join(', ') || '—'}</div>
+      </div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;font-size:12px">
+        <div>🔍 <b>${d.stats_7d?.search_shows ?? 0}</b> показов/7д</div>
+        <div>👁️ <b>${d.stats_7d?.views ?? 0}</b> просмотров <span class="c-green">+${d.stats_7d?.views_new ?? 0}</span></div>
+        <div>💌 <b>${d.stats_7d?.invitations ?? 0}</b> приглашений <span class="c-green">+${d.stats_7d?.invitations_new ?? 0}</span></div>
+      </div>
+
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px">Навыки: <span style="color:var(--text)">${(d.skills || []).slice(0, 15).map(s => esc(s)).join(', ')}</span></div>
+    </div>`;
+
+  if (issues.length) {
+    html += `<div style="font-size:13px;font-weight:700;margin-bottom:8px">Рекомендации (${issues.length})</div>`;
+    html += issues.map(iss => `
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:6px;display:flex;gap:8px;align-items:flex-start">
+        <div style="flex-shrink:0;font-size:14px">${levelIcon[iss.level] || '❓'}</div>
+        <div>
+          <div style="font-size:12px">${esc(iss.text)}</div>
+          ${iss.fix ? `<div style="font-size:11px;color:var(--cyan);margin-top:3px">💡 ${esc(iss.fix)}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } else {
+    html += '<div style="color:var(--green);font-size:13px">✅ Проблем не найдено — резюме в хорошей форме!</div>';
+  }
+
+  // Market analytics
+  const m = d.market;
+  if (m && (m.vacancy_count || m.active_seekers)) {
+    const ratioColor = m.supply_demand_ratio > 5 ? 'var(--red)' : m.supply_demand_ratio > 2 ? 'var(--yellow)' : 'var(--green)';
+    html += `
+      <div style="font-size:13px;font-weight:700;margin-top:16px;margin-bottom:8px">Анализ рынка</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-bottom:14px">
+        <div class="audit-card">
+          <div class="audit-label">Вакансий</div>
+          <div style="font-weight:600;color:var(--cyan)">${(m.vacancy_count || 0).toLocaleString()}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Активных соискателей</div>
+          <div style="font-weight:600;color:var(--yellow)">${(m.active_seekers || 0).toLocaleString()}</div>
+        </div>
+        <div class="audit-card">
+          <div class="audit-label">Конкуренция (чел/вак)</div>
+          <div style="font-weight:600;color:${ratioColor}">${m.supply_demand_ratio || '—'}</div>
+        </div>
+      </div>`;
+
+    // Experience distribution
+    if (m.experience_distribution && m.experience_distribution.length) {
+      html += `<div style="font-size:12px;color:var(--dim);margin-bottom:6px">Опыт конкурентов:</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">`;
+      for (const ed of m.experience_distribution) {
+        html += `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px">
+          ${esc(ed.name)} <span style="color:var(--cyan);font-weight:600">${(ed.count || 0).toLocaleString()}</span>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    // Top skills from competitors: green if user has it, red if missing
+    if (m.top_competitor_skills && m.top_competitor_skills.length) {
+      const userSkills = new Set((d.skills || []).map(s => s.toLowerCase()));
+      html += `<div style="font-size:12px;color:var(--dim);margin-bottom:6px">Топ навыки конкурентов:</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">`;
+      for (const sk of m.top_competitor_skills) {
+        const skName = typeof sk === 'string' ? sk : (sk.name || '');
+        const skCount = typeof sk === 'object' ? (sk.count || '') : '';
+        const has = userSkills.has(skName.toLowerCase());
+        const skColor = has ? 'var(--green)' : 'var(--red)';
+        const skBg = has ? 'rgba(0,255,0,0.08)' : 'rgba(255,0,0,0.08)';
+        const countLabel = skCount ? ` (${(skCount/1000).toFixed(0)}K)` : '';
+        html += `<span style="background:${skBg};color:${skColor};border:1px solid ${skColor};border-radius:4px;padding:2px 7px;font-size:11px">${esc(skName)}${countLabel}</span>`;
+      }
+      html += '</div>';
+    }
+  }
+
+  // ── Weight analysis — exact recipe for 100% ──
+  if (d.weight_analysis && d.weight_analysis.length) {
+    const filled = d.filled_weight || 0;
+    const total = d.total_weight || 1;
+    const pct = Math.round(filled / total * 100);
+    html += `<div style="font-size:13px;font-weight:700;margin:14px 0 8px">Заполненность резюме: ${filled}/${total} (${pct}%)</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">`;
+    for (const f of d.weight_analysis) {
+      const color = f.filled ? 'var(--green)' : 'var(--red)';
+      const bg = f.filled ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)';
+      const icon = f.filled ? '✅' : '❌';
+      html += `<span style="background:${bg};color:${color};border:1px solid ${color};border-radius:4px;padding:2px 8px;font-size:11px" title="weight=${f.weight}, status=${f.status}">${icon} ${esc(f.label)} <b>×${f.weight}</b></span>`;
+    }
+    html += `</div>`;
+    // How to reach 80%+
+    const unfilled = d.weight_analysis.filter(f => !f.filled);
+    if (unfilled.length && pct < 80) {
+      const needed80 = Math.ceil(total * 0.8) - filled;
+      html += `<div style="font-size:11px;color:var(--cyan);margin-bottom:12px">💡 Для 80%+ нужно ещё <b>${needed80}</b> веса. Самые ценные: ${unfilled.slice(0,4).map(f => `<b>${esc(f.label)}</b> (×${f.weight})`).join(', ')}</div>`;
+    }
+  }
+
+  // ── Supply/demand comparison ──
+  if (d.supply_demand_comparison && d.supply_demand_comparison.length) {
+    html += `<div style="font-size:13px;font-weight:700;margin:14px 0 8px">Конкуренция по запросам</div>`;
+    html += `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px">`;
+    html += `<tr style="color:var(--dim);text-align:left"><th style="padding:4px 8px">Запрос</th><th style="padding:4px 8px">Вакансий</th><th style="padding:4px 8px">Конкуренция</th><th style="padding:4px 8px">Оценка</th></tr>`;
+    for (const item of d.supply_demand_comparison) {
+      const ratio = item.ratio || 0;
+      const rColor = ratio > 30 ? 'var(--red)' : ratio > 15 ? 'var(--yellow)' : 'var(--green)';
+      const label = ratio > 30 ? '🔴 высокая' : ratio > 15 ? '🟡 средняя' : ratio > 0 ? '🟢 низкая' : '—';
+      html += `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:4px 8px">${esc(item.term)}</td>
+        <td style="padding:4px 8px;font-weight:600">${item.vacancies || 0}</td>
+        <td style="padding:4px 8px;color:${rColor};font-weight:600">${ratio ? ratio + ' чел/вак' : '—'}</td>
+        <td style="padding:4px 8px">${label}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+    // Best term recommendation
+    const best = d.supply_demand_comparison.find(x => x.ratio > 0);
+    if (best && d.supply_demand_comparison.length > 1) {
+      const worst = d.supply_demand_comparison[d.supply_demand_comparison.length - 1];
+      if (best.term !== worst.term && worst.ratio > best.ratio * 1.5) {
+        html += `<div style="font-size:11px;color:var(--cyan);margin-bottom:8px">💡 Запрос «<b>${esc(best.term)}</b>» имеет наименьшую конкуренцию — оптимизируй заголовок резюме под него</div>`;
+      }
+    }
+  }
+
+  // HR Activity
+  if (d.hr_activity) {
+    const ha = d.hr_activity;
+    const total = ha.active_count + ha.slow_count + ha.dead_count;
+    if (total > 0) {
+      html += `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px">👥 Активность HR-менеджеров</div>
+        <div style="display:flex;gap:16px;font-size:12px">
+          <div><span style="color:var(--green);font-weight:600">${ha.active_count}</span> <span style="color:var(--dim)">активных (&lt;3 дн.)</span></div>
+          <div><span style="color:var(--yellow);font-weight:600">${ha.slow_count}</span> <span style="color:var(--dim)">медленных (3-7 дн.)</span></div>
+          <div><span style="color:var(--red);font-weight:600">${ha.dead_count}</span> <span style="color:var(--dim)">неактивных (&gt;7 дн.)</span></div>
+        </div>`;
+      if (ha.dead_count > ha.active_count) {
+        html += `<div style="font-size:11px;color:var(--yellow);margin-top:6px">⚠️ Много неактивных HR — часть откликов может не получить ответа</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  return html;
+}
+
+// ── Hot Leads ────────────────────────────────────────────────
+async function loadHotLeads(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('leads-status');
+  const res = document.getElementById('leads-result');
+  if (!sel || !res) return;
+  const idx = sel.value;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Загружаю...'; st.style.color = 'var(--dim)'; }
+  res.style.display = 'none';
+  try {
+    const r = await fetch(`/api/account/${idx}/hot_leads`);
+    const data = await r.json();
+    if (data.error) {
+      if (st) { st.textContent = '❌ ' + data.error; st.style.color = 'var(--red)'; }
+      return;
+    }
+    if (st) st.textContent = `${data.total || 0} работодателей`;
+    res.style.display = '';
+    const offers = data.offers || [];
+    if (!offers.length) {
+      res.innerHTML = '<div style="color:var(--dim);font-size:12px">Нет горячих лидов</div>';
+      return;
+    }
+    res.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">${offers.map(o => {
+      const vacs = (o.vacancies || []).slice(0, 2).map(v => esc(v)).join(', ');
+      const invBadge = o.has_invitation ? '<span style="background:rgba(63,185,80,0.15);color:var(--green);padding:1px 6px;border-radius:3px;font-size:10px;margin-left:6px">приглашение</span>' : '';
+      const link = o.vacancy_id ? `<a href="https://hh.ru/vacancy/${o.vacancy_id}" target="_blank" style="color:var(--cyan);font-size:11px;margin-left:6px">→ вакансия</a>` : '';
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+        <div style="font-size:12px;font-weight:600">${esc(o.employer)}${invBadge}${link}</div>
+        <div style="font-size:11px;color:var(--dim);margin-top:2px">${vacs}</div>
+      </div>`;
+    }).join('')}</div>`;
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── HR Contacts ─────────────────────────────────────────────
+async function loadHrContacts(btn) {
+  const st = document.getElementById('contacts-status');
+  const res = document.getElementById('contacts-result');
+  if (!res) return;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Загружаю...'; st.style.color = 'var(--dim)'; }
+  res.style.display = 'none';
+  try {
+    const r = await fetch('/api/hr_contacts');
+    const data = await r.json();
+    if (st) st.textContent = `${data.total || 0} контактов`;
+    res.style.display = '';
+    const contacts = data.contacts || [];
+    if (!contacts.length) {
+      res.innerHTML = '<div style="color:var(--dim);font-size:12px">Нет собранных контактов. Контакты HR собираются автоматически при проверке вакансий (skip_inconsistent).</div>';
+      return;
+    }
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:11px">';
+    html += '<tr style="color:var(--dim);border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 6px">Время</th><th style="text-align:left;padding:4px 6px">Вакансия</th><th style="text-align:left;padding:4px 6px">Компания</th><th style="text-align:left;padding:4px 6px">ФИО</th><th style="text-align:left;padding:4px 6px">Email</th><th style="text-align:left;padding:4px 6px">Телефон</th></tr>';
+    contacts.slice().reverse().forEach(c => {
+      const link = c.vacancy_id ? `<a href="https://hh.ru/vacancy/${c.vacancy_id}" target="_blank" style="color:var(--cyan)">${esc(c.title || c.vacancy_id)}</a>` : esc(c.title || '?');
+      html += `<tr style="border-bottom:1px solid rgba(48,54,61,0.5)">
+        <td style="padding:4px 6px;color:var(--dim);white-space:nowrap">${esc(c.time || '')}</td>
+        <td style="padding:4px 6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${link}</td>
+        <td style="padding:4px 6px;color:var(--dim)">${esc(c.company || '')}</td>
+        <td style="padding:4px 6px">${esc(c.fio || '')}</td>
+        <td style="padding:4px 6px">${c.email ? `<a href="mailto:${esc(c.email)}" style="color:var(--cyan)">${esc(c.email)}</a>` : ''}</td>
+        <td style="padding:4px 6px">${esc(c.phone || '')}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    res.innerHTML = html;
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Remindable Negotiations ─────────────────────────────────
+async function loadRemindable(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('remindable-status');
+  const res = document.getElementById('remindable-result');
+  if (!sel || !res) return;
+  const idx = sel.value;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Проверяю...'; st.style.color = 'var(--dim)'; }
+  res.style.display = 'none';
+  try {
+    const r = await fetch(`/api/account/${idx}/remindable`);
+    const data = await r.json();
+    if (data.error) {
+      if (st) { st.textContent = '❌ ' + data.error; st.style.color = 'var(--red)'; }
+      return;
+    }
+    if (st) st.textContent = `${data.total || 0} переговоров`;
+    res.style.display = '';
+    const items = data.remindable || [];
+    if (!items.length) {
+      res.innerHTML = '<div style="color:var(--dim);font-size:12px">Нет переговоров, где можно отправить напоминание.</div>';
+      return;
+    }
+    res.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">${items.map(item => {
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+        <div style="font-size:12px;font-weight:600">${esc(item.employer || '?')}</div>
+        <div style="font-size:11px;color:var(--dim);margin-top:2px">${esc(item.vacancy || '')}</div>
+      </div>`;
+    }).join('')}</div>`;
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── OAuth API ────────────────────────────────────────────────
+async function oauthGetToken(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('oauth-status');
+  if (!sel) return;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Получаю токен...'; st.style.color = 'var(--dim)'; }
+  try {
+    const r = await fetch(`/api/account/${sel.value}/oauth_token`, {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const hrs = Math.round(d.expires_in / 3600);
+      if (st) { st.textContent = `✅ Токен: ${d.token_prefix} | ${hrs}ч осталось | refresh: ${d.has_refresh ? 'да' : 'нет'}`; st.style.color = 'var(--green)'; }
+    } else {
+      if (st) { st.textContent = '❌ ' + (d.error || 'Ошибка'); st.style.color = 'var(--red)'; }
+    }
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function oauthTouch(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('oauth-status');
+  if (!sel) return;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Поднимаю резюме...'; st.style.color = 'var(--dim)'; }
+  try {
+    const r = await fetch(`/api/account/${sel.value}/oauth_touch`, {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      if (st) { st.textContent = '✅ ' + d.message; st.style.color = 'var(--green)'; }
+    } else {
+      if (st) { st.textContent = '⚠️ ' + (d.message || d.error); st.style.color = 'var(--yellow)'; }
+    }
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Resume Cloning ───────────────────────────────────────────
+async function loadAllResumes(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('resumes-status');
+  const res = document.getElementById('resumes-result');
+  if (!sel || !res) return;
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳...'; st.style.color = 'var(--dim)'; }
+  res.style.display = 'none';
+  try {
+    const r = await fetch(`/api/account/${sel.value}/all_resumes`);
+    const data = await r.json();
+    if (st) st.textContent = `${data.total || 0} резюме`;
+    res.style.display = '';
+    const items = data.resumes || [];
+    if (!items.length) { res.innerHTML = '<div style="color:var(--dim);font-size:12px">Нет резюме</div>'; return; }
+    res.innerHTML = items.map(r => {
+      const statusColor = r.status === 'published' ? 'var(--green)' : r.status === 'not_finished' ? 'var(--red)' : 'var(--yellow)';
+      const statusLabel = r.status === 'published' ? 'опубликовано' : r.status === 'not_finished' ? 'не завершено' : r.status === 'modified' ? 'изменено' : r.status;
+      const pctColor = (r.percent || 0) >= 80 ? 'var(--green)' : (r.percent || 0) > 0 ? 'var(--yellow)' : 'var(--red)';
+      const statsInfo = (r.views_7d || r.shows_7d) ? ` · 👁️${r.views_7d} · 🔍${r.shows_7d}` : '';
+      const contentInfo = r.skills_count ? `${r.skills_count} навыков, ${r.experience_count} мест работы` : 'пусто';
+      return `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600">${esc(r.title)}</div>
+          <div style="font-size:11px;color:var(--dim);margin-top:2px">
+            <span style="color:${statusColor}">${esc(statusLabel)}</span> ·
+            <span style="color:${pctColor}">${r.percent || '?'}%</span> ·
+            ${r.is_searchable ? '🔍 в поиске' : '🚫 скрыто'} ·
+            ${contentInfo}${statsInfo}
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <a href="${esc(r.edit_url)}" target="_blank" class="btn-sm" style="font-size:11px">✏️ hh.ru</a>
+          <button class="btn-sm" style="font-size:11px" onclick="quickEditResume('${esc(r.hash)}')">⚡ Быстро</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function cloneResume(btn) {
+  const sel = document.getElementById('audit-acc-sel');
+  const st = document.getElementById('resumes-status');
+  if (!sel) return;
+  const preset = document.getElementById('clone-preset')?.value || '';
+  const custom = document.getElementById('clone-title')?.value.trim() || '';
+  const title = custom || preset;
+  if (!title) {
+    if (!confirm('Клонировать без заголовка? Придётся задать вручную на hh.ru')) return;
+  }
+  if (btn) btn.disabled = true;
+  if (st) { st.textContent = '⏳ Клонирую...'; st.style.color = 'var(--dim)'; }
+  try {
+    const r = await fetch(`/api/account/${sel.value}/clone_resume`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title})
+    });
+    const data = await r.json();
+    if (data.ok) {
+      const msg = data.title_set ? `✅ Склонировано: "${title}"` : '✅ Склонировано (заголовок задай на hh.ru)';
+      if (st) { st.textContent = msg; st.style.color = 'var(--green)'; }
+      // Refresh list
+      setTimeout(() => loadAllResumes(), 500);
+    } else {
+      if (st) { st.textContent = '❌ ' + (data.error || 'Ошибка'); st.style.color = 'var(--red)'; }
+    }
+  } catch(e) {
+    if (st) { st.textContent = '❌ ' + e; st.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function quickEditResume(hash) {
+  const sel = document.getElementById('audit-acc-sel');
+  if (!sel) return;
+  const idx = sel.value;
+  const title = prompt('Заголовок резюме (должность):', '');
+  if (title === null) return;
+  const salary = prompt('Зарплата (₽, 0 = убрать):', '0');
+  const skills = prompt('О себе (описание, пусто = не менять):', '');
+
+  const body = {resume_hash: hash};
+  if (title) body.title = title;
+  if (salary && parseInt(salary) > 0) body.salary = parseInt(salary);
+  if (skills) body.skills = skills;
+
+  if (!Object.keys(body).some(k => k !== 'resume_hash')) {
+    alert('Нечего менять'); return;
+  }
+
+  try {
+    const r = await fetch(`/api/account/${idx}/edit_resume`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if (data.ok) {
+      alert('✅ Резюме обновлено!');
+      loadAllResumes();
+    } else {
+      alert('❌ ' + (data.error || 'Ошибка'));
+    }
+  } catch(e) {
+    alert('❌ ' + e);
   }
 }
 
@@ -4948,14 +5865,13 @@ function toggleCompact(idx) {
   else State.compactCards.add(idx);
   const card = document.getElementById('card-' + idx);
   if (!card) return;
+  const btn = card.querySelector('.compact-btn');
   if (State.compactCards.has(idx)) {
     card.classList.add('compact');
-    card.querySelector('.compact-btn').textContent = '⬜';
-    card.querySelector('.compact-btn').title = 'Развернуть карточку';
+    if (btn) { btn.textContent = '⬜'; btn.title = 'Развернуть карточку'; }
   } else {
     card.classList.remove('compact');
-    card.querySelector('.compact-btn').textContent = '⬜';
-    card.querySelector('.compact-btn').title = 'Свернуть карточку';
+    if (btn) { btn.textContent = '⬜'; btn.title = 'Свернуть карточку'; }
   }
 }
 

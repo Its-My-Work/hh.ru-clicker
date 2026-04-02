@@ -33,7 +33,196 @@ except ImportError:
     _openai_available = False
 
 _llm_rr_index = 0  # round-robin counter for multi-profile LLM
+_llm_rr_lock = threading.Lock()
+
+
+def _randomize_text(template: str) -> str:
+    """Replace {opt1|opt2|opt3} with random choice from alternatives."""
+    def pick(m):
+        options = [o.strip() for o in m.group(1).split('|')]
+        return random.choice(options)
+    return re.sub(r'\{([^}]+\|[^}]+)\}', pick, template)
+
+
+# ── OAuth via official Android app credentials ──
+_HH_OAUTH_CLIENT_ID = "HIOMIAS39CA9DICTA7JIO64LQKQJF5AGIK74G9ITJKLNEDAOH5FHS5G1JI7FOEGD"
+_HH_OAUTH_CLIENT_SECRET = "V9M870DE342BGHFRUJ5FTCGCUA1482AN0DI8C5TFI9ULMA89H10N60NOP8I4JMVS"
+_HH_OAUTH_REDIRECT = "hhandroid://oauthresponse"
+_oauth_tokens: dict = {}  # {resume_hash: {access_token, refresh_token, expires_at}}
+_oauth_lock = threading.Lock()
+
+
+def _obtain_oauth_token(acc: dict) -> str:
+    """Get OAuth access_token for account. Auto-refresh if expired. Returns token or empty string."""
+    resume_hash = acc.get("resume_hash", "")
+    if not resume_hash:
+        return ""
+
+    with _oauth_lock:
+        cached = _oauth_tokens.get(resume_hash)
+        if cached and cached.get("expires_at", 0) > time.time() + 300:
+            return cached["access_token"]
+
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    # Try refresh first
+    with _oauth_lock:
+        cached = _oauth_tokens.get(resume_hash, {})
+    refresh = cached.get("refresh_token", "")
+    if refresh:
+        try:
+            r = requests.post("https://hh.ru/oauth/token", data={
+                "grant_type": "refresh_token",
+                "client_id": _HH_OAUTH_CLIENT_ID,
+                "client_secret": _HH_OAUTH_CLIENT_SECRET,
+                "refresh_token": refresh,
+            }, headers={"User-Agent": ua}, verify=False, timeout=15)
+            if r.status_code == 200:
+                d = r.json()
+                with _oauth_lock:
+                    _oauth_tokens[resume_hash] = {
+                        "access_token": d["access_token"],
+                        "refresh_token": d.get("refresh_token", refresh),
+                        "expires_at": time.time() + d.get("expires_in", 1209599),
+                    }
+                log_debug(f"OAuth: refreshed token for {resume_hash[:12]}")
+                return d["access_token"]
+        except Exception as e:
+            log_debug(f"OAuth refresh error: {e}")
+
+    # Full authorize flow using cookies
+    try:
+        cookies = acc.get("cookies", {})
+        # Step 1: GET authorize
+        r1 = requests.get("https://hh.ru/oauth/authorize", params={
+            "response_type": "code",
+            "client_id": _HH_OAUTH_CLIENT_ID,
+            "redirect_uri": _HH_OAUTH_REDIRECT,
+            "state": "botstate",
+        }, headers={"User-Agent": ua}, cookies=cookies, verify=False, timeout=15, allow_redirects=False)
+
+        code = None
+        loc = r1.headers.get("Location", "")
+        m = re.search(r"code=([^&]+)", loc)
+        if m:
+            code = m.group(1)
+        elif r1.status_code == 200 and ("разрешить" in r1.text.lower() or "approve" in r1.text.lower() or "grant" in r1.text.lower()):
+            # Submit approve form
+            r2 = requests.post("https://hh.ru/oauth/authorize", data={
+                "response_type": "code",
+                "client_id": _HH_OAUTH_CLIENT_ID,
+                "redirect_uri": _HH_OAUTH_REDIRECT,
+                "state": "botstate",
+                "action": "approve",
+                "_xsrf": cookies.get("_xsrf", ""),
+            }, headers={"User-Agent": ua}, cookies=cookies, verify=False, timeout=15, allow_redirects=False)
+            loc2 = r2.headers.get("Location", "")
+            m2 = re.search(r"code=([^&]+)", loc2)
+            if m2:
+                code = m2.group(1)
+
+        if not code:
+            log_debug(f"OAuth: failed to get code for {resume_hash[:12]}")
+            return ""
+
+        # Step 2: Exchange code for token
+        r3 = requests.post("https://hh.ru/oauth/token", data={
+            "grant_type": "authorization_code",
+            "client_id": _HH_OAUTH_CLIENT_ID,
+            "client_secret": _HH_OAUTH_CLIENT_SECRET,
+            "redirect_uri": _HH_OAUTH_REDIRECT,
+            "code": code,
+        }, headers={"User-Agent": ua, "Content-Type": "application/x-www-form-urlencoded"}, verify=False, timeout=15)
+
+        if r3.status_code == 200:
+            d = r3.json()
+            with _oauth_lock:
+                _oauth_tokens[resume_hash] = {
+                    "access_token": d["access_token"],
+                    "refresh_token": d.get("refresh_token", ""),
+                    "expires_at": time.time() + d.get("expires_in", 1209599),
+                }
+            log_debug(f"OAuth: obtained token for {resume_hash[:12]}, expires in {d.get('expires_in',0)}s")
+            return d["access_token"]
+        else:
+            log_debug(f"OAuth: token exchange failed {r3.status_code}: {r3.text[:200]}")
+    except Exception as e:
+        log_debug(f"OAuth: authorize error: {e}")
+    return ""
+
+
+def _oauth_apply(acc: dict, vid: str, message: str = "") -> tuple:
+    """Apply to vacancy via OAuth API. Returns (result_str, info_dict)."""
+    token = _obtain_oauth_token(acc)
+    if not token:
+        return "error", {"exception": "OAuth token не получен"}
+    resume_hash = acc.get("resume_hash", "")
+    try:
+        message = _randomize_text(message) if message else message
+        data = {"vacancy_id": vid, "resume_id": resume_hash}
+        if message:
+            data["message"] = message
+        r = requests.post(
+            "https://api.hh.ru/negotiations",
+            headers={"User-Agent": "Mozilla/5.0", "Authorization": f"Bearer {token}",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            data=data, verify=False, timeout=15,
+        )
+        if r.status_code in (200, 201, 204):
+            # Success — try to get vacancy info
+            info = {}
+            try:
+                d = r.json()
+                info = {"title": d.get("vacancy", {}).get("name", ""),
+                        "company": d.get("vacancy", {}).get("employer", {}).get("name", "")}
+            except Exception:
+                pass
+            return "sent", info
+        elif r.status_code == 400:
+            try:
+                d = r.json()
+            except Exception:
+                return "error", {"raw": r.text[:100]}
+            err = d.get("errors", [{}])[0].get("value", d.get("description", ""))
+            if "limit" in err.lower():
+                return "limit", {}
+            if "already" in err.lower() or "exist" in err.lower():
+                return "already", {}
+            if "test" in err.lower():
+                return "test", {}
+            return "error", {"raw": err}
+        elif r.status_code in (401, 403):
+            return "auth_error", {}
+        elif r.status_code == 404:
+            return "error", {"raw": "Вакансия не найдена"}
+        else:
+            return "error", {"raw": f"HTTP {r.status_code}: {r.text[:100]}"}
+    except Exception as e:
+        return "error", {"exception": str(e)}
+
+
+def _oauth_touch_resume(acc: dict) -> tuple:
+    """Touch resume via OAuth API (no captcha). Returns (success, message)."""
+    token = _obtain_oauth_token(acc)
+    if not token:
+        return False, "OAuth token не получен"
+    resume_hash = acc.get("resume_hash", "")
+    try:
+        r = requests.post(
+            f"https://api.hh.ru/resumes/{resume_hash}/publish",
+            headers={"User-Agent": "Mozilla/5.0", "Authorization": f"Bearer {token}"},
+            verify=False, timeout=15,
+        )
+        if r.status_code in (200, 204):
+            return True, "✅ Резюме поднято через OAuth API!"
+        elif r.status_code == 429:
+            return False, "Кулдаун (429) — подождите 4 часа"
+        else:
+            return False, f"HTTP {r.status_code}: {r.text[:100]}"
+    except Exception as e:
+        return False, f"Ошибка: {str(e)[:50]}"
 _resume_cache: dict = {}   # {resume_hash: (text, timestamp)}
+_resume_cache_lock = threading.Lock()
 _RESUME_CACHE_TTL = 4 * 3600  # 4 hours
 
 # ============================================================
@@ -90,7 +279,8 @@ def _load_cache():
                 try:
                     with open(APPLIED_FILE, "r", encoding="utf-8") as f:
                         _cache_applied = json.load(f)
-                except:
+                except (json.JSONDecodeError, OSError, ValueError) as e:
+                    log_debug(f"⚠️ Ошибка загрузки {APPLIED_FILE}: {e}")
                     _cache_applied = {}
             else:
                 _cache_applied = {}
@@ -99,7 +289,8 @@ def _load_cache():
                 try:
                     with open(TEST_REQUIRED_FILE, "r", encoding="utf-8") as f:
                         _cache_tests = json.load(f)
-                except:
+                except (json.JSONDecodeError, OSError, ValueError) as e:
+                    log_debug(f"⚠️ Ошибка загрузки {TEST_REQUIRED_FILE}: {e}")
                     _cache_tests = {}
             else:
                 _cache_tests = {}
@@ -108,26 +299,39 @@ def _load_cache():
                 try:
                     with open(INTERVIEWS_FILE, "r", encoding="utf-8") as f:
                         _cache_interviews = json.load(f)
-                except:
+                except (json.JSONDecodeError, OSError, ValueError) as e:
+                    log_debug(f"⚠️ Ошибка загрузки {INTERVIEWS_FILE}: {e}")
                     _cache_interviews = {}
             else:
                 _cache_interviews = {}
 
 
 def _save_applied_async():
-    """Сохранить applied в фоне"""
+    """Сохранить applied в фоне (atomic write)"""
     with _cache_lock:
         data = _cache_applied.copy() if _cache_applied else {}
-    with open(APPLIED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    tmp = APPLIED_FILE.with_suffix(".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        tmp.replace(APPLIED_FILE)
+    except Exception as e:
+        log_debug(f"_save_applied_async error: {e}")
+        tmp.unlink(missing_ok=True)
 
 
 def _save_tests_async():
-    """Сохранить tests в фоне"""
+    """Сохранить tests в фоне (atomic write)"""
     with _cache_lock:
         data = _cache_tests.copy() if _cache_tests else {}
-    with open(TEST_REQUIRED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    tmp = TEST_REQUIRED_FILE.with_suffix(".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        tmp.replace(TEST_REQUIRED_FILE)
+    except Exception as e:
+        log_debug(f"_save_tests_async error: {e}")
+        tmp.unlink(missing_ok=True)
 
 
 _save_interviews_lock = threading.Lock()
@@ -243,9 +447,16 @@ def load_browser_sessions() -> list:
 
 def save_browser_sessions(sessions: list):
     """Сохранить браузерные сессии в файл (в фоновом потоке)."""
+    snapshot = list(sessions)
     def _write():
-        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, ensure_ascii=False, indent=2)
+        tmp = SESSIONS_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            tmp.replace(SESSIONS_FILE)
+        except Exception as e:
+            log_debug(f"save_browser_sessions error: {e}")
+            tmp.unlink(missing_ok=True)
     threading.Thread(target=_write, daemon=True).start()
 
 
@@ -256,8 +467,14 @@ def save_accounts():
         for acc in accounts_data
     ]
     def _write():
-        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        tmp = ACCOUNTS_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            tmp.replace(ACCOUNTS_FILE)
+        except Exception as e:
+            log_debug(f"save_accounts error: {e}")
+            tmp.unlink(missing_ok=True)
     threading.Thread(target=_write, daemon=True).start()
 
 
@@ -280,6 +497,8 @@ _CONFIG_KEYS = [
     "pages_per_url", "max_concurrent", "response_delay", "pause_between_cycles",
     "limit_check_interval", "resume_touch_interval", "batch_responses", "min_salary",
     "auto_pause_errors", "questionnaire_default_answer", "llm_fill_questionnaire",
+    "skip_inconsistent", "use_oauth_apply", "daily_apply_limit", "stop_on_hh_limit",
+    "filter_agencies", "filter_low_competition", "search_period_days",
 ]
 
 
@@ -288,6 +507,9 @@ def save_config():
     data = {k: getattr(CONFIG, k) for k in _CONFIG_KEYS}
     data["questionnaire_templates"] = CONFIG.questionnaire_templates
     data["letter_templates"] = CONFIG.letter_templates
+    data["allowed_schedules"] = CONFIG.allowed_schedules
+    data["auto_apply_tests"] = CONFIG.auto_apply_tests
+    data["use_oauth_apply"] = CONFIG.use_oauth_apply
     data["url_pool"] = CONFIG.url_pool
     data["llm_api_key"] = CONFIG.llm_api_key
     data["llm_base_url"] = CONFIG.llm_base_url
@@ -300,8 +522,14 @@ def save_config():
     data["llm_profiles"] = CONFIG.llm_profiles
     data["llm_profile_mode"] = CONFIG.llm_profile_mode
     def _write():
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp = CONFIG_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp.replace(CONFIG_FILE)
+        except Exception as e:
+            log_debug(f"save_config error: {e}")
+            tmp.unlink(missing_ok=True)
     threading.Thread(target=_write, daemon=True).start()
 
 
@@ -315,7 +543,10 @@ def load_config():
         for k in _CONFIG_KEYS:
             if k in data:
                 old_val = getattr(CONFIG, k)
-                setattr(CONFIG, k, type(old_val)(data[k]))
+                try:
+                    setattr(CONFIG, k, type(old_val)(data[k]))
+                except (ValueError, TypeError):
+                    log_debug(f"⚠️ Невалидное значение конфига {k}={data[k]!r}, пропуск")
         if "questionnaire_templates" in data and isinstance(data["questionnaire_templates"], list):
             CONFIG.questionnaire_templates = data["questionnaire_templates"]
         if "letter_templates" in data and isinstance(data["letter_templates"], list):
@@ -328,6 +559,12 @@ def load_config():
         for k in ("llm_enabled", "llm_auto_send", "llm_use_cover_letter", "llm_use_resume", "llm_fill_questionnaire"):
             if k in data:
                 setattr(CONFIG, k, bool(data[k]))
+        if "allowed_schedules" in data and isinstance(data["allowed_schedules"], list):
+            CONFIG.allowed_schedules = data["allowed_schedules"]
+        if "auto_apply_tests" in data:
+            CONFIG.auto_apply_tests = bool(data["auto_apply_tests"])
+        if "use_oauth_apply" in data:
+            CONFIG.use_oauth_apply = bool(data["use_oauth_apply"])
         if "llm_profiles" in data and isinstance(data["llm_profiles"], list):
             CONFIG.llm_profiles = data["llm_profiles"]
         if "llm_profile_mode" in data and isinstance(data["llm_profile_mode"], str):
@@ -529,6 +766,13 @@ class Config:
     batch_responses = 3
     min_salary = 0  # Минимальная зарплата в руб (0 = без фильтра)
     auto_pause_errors = 5  # Авто-пауза после N ошибок подряд (0 = выключено)
+    auto_apply_tests: bool = False  # Автоматически проходить опросники при откликах
+    use_oauth_apply: bool = False  # Использовать OAuth API для откликов (вместо web cookies)
+    daily_apply_limit: int = 0  # Жёсткий лимит откликов в день (0 = без ограничения)
+    stop_on_hh_limit: bool = True  # Полная остановка при HH лимите (не перепроверять)
+    # Фильтр по формату работы (пустой = без фильтра, все форматы)
+    # Возможные значения: "fullDay", "remote", "flexible", "shift", "flyInFlyOut"
+    allowed_schedules: list = []
 
     # LLM auto-reply settings
     llm_enabled: bool = False
@@ -540,6 +784,10 @@ class Config:
     llm_model: str = "gpt-4o-mini"
     llm_profiles: list = None         # [{name, api_key, base_url, model, enabled}]
     llm_profile_mode: str = "fallback"  # "fallback" | "roundrobin"
+    skip_inconsistent: bool = False  # Пропускать вакансии с несовпадением опыта
+    filter_agencies: bool = False  # Исключить кадровые агентства из поиска
+    filter_low_competition: bool = False  # Только вакансии с <10 откликами
+    search_period_days: int = 0  # 0 = все, 1-30 = последние N дней
     llm_fill_questionnaire: bool = False  # Использовать LLM для заполнения опросников
     llm_system_prompt: str = (
         "Ты помощник соискателя работы. Отвечай вежливо и кратко (2-4 предложения) "
@@ -697,6 +945,63 @@ def parse_salaries(html: str, ids: set) -> dict:
     return result
 
 
+_SCHEDULE_LABELS = {
+    "удалённая": "remote", "удаленная": "remote", "remote": "remote",
+    "полный день": "fullDay", "full day": "fullDay", "fullday": "fullDay",
+    "гибкий": "flexible", "flexible": "flexible",
+    "сменный": "shift", "shift": "shift",
+    "вахтовый": "flyInFlyOut", "flyinflyout": "flyInFlyOut", "вахта": "flyInFlyOut",
+}
+
+
+def parse_work_schedules(html: str, ids: set) -> dict:
+    """
+    Извлекает формат работы для вакансий из HTML поисковой выдачи.
+    Возвращает {vacancy_id: set_of_schedule_ids} (e.g. {"remote", "flexible"}).
+    """
+    result = {vid: set() for vid in ids}
+    if not ids or not CONFIG.allowed_schedules:
+        return result
+
+    # Approach 1: JSON — ищем "workSchedules":[{"id":"remote"}] или "scheduleTypeNames":["Удалённая"]
+    for m in re.finditer(r'"(?:workSchedule(?:Type)?s?|scheduleType(?:Name)?s?)"\s*:\s*\[([^\]]{0,500})\]', html):
+        block = m.group(1)
+        # Ищем ближайший vacancy ID перед этим блоком
+        context = html[max(0, m.start() - 2000): m.start()]
+        vid_matches = re.findall(r'/vacancy/(\d+)', context)
+        if not vid_matches:
+            continue
+        vid = vid_matches[-1]
+        if vid not in result:
+            continue
+        # Извлекаем id из JSON-объектов {"id":"remote"} или строк "Удалённая работа"
+        for sid in re.findall(r'"id"\s*:\s*"(\w+)"', block):
+            result[vid].add(sid)
+        for label in re.findall(r'"([^"]+)"', block):
+            label_lower = label.lower().strip()
+            for key, code in _SCHEDULE_LABELS.items():
+                if key in label_lower:
+                    result[vid].add(code)
+                    break
+
+    # Approach 2: HTML labels — data-qa элементы с расписанием
+    for m in re.finditer(r'data-qa="[^"]*(?:schedule|work-mode|work-format)[^"]*"[^>]*>([^<]{2,50})<', html):
+        label = m.group(1).strip().lower()
+        context = html[max(0, m.start() - 3000): m.start()]
+        vid_matches = re.findall(r'/vacancy/(\d+)', context)
+        if not vid_matches:
+            continue
+        vid = vid_matches[-1]
+        if vid not in result:
+            continue
+        for key, code in _SCHEDULE_LABELS.items():
+            if key in label:
+                result[vid].add(code)
+                break
+
+    return result
+
+
 def extract_search_query(url: str) -> str:
     """Извлекает поисковый запрос из URL"""
     if "text=" in url:
@@ -777,6 +1082,8 @@ def _parse_questionnaire_fields(html: str) -> tuple:
         q_text = questions[q_idx] if q_idx < len(questions) else ""
         tmpl_answer = get_questionnaire_answer(q_text).lower()
 
+        if not values:
+            continue
         chosen = values[0]  # дефолт — первый вариант
 
         # Ищем label-текст для каждого value чтобы сопоставить с шаблоном
@@ -795,11 +1102,37 @@ def _parse_questionnaire_fields(html: str) -> tuple:
         if name_m and val_m and re.match(r'task_\d+', name_m.group(1)):
             checkbox_groups.setdefault(name_m.group(1), []).append(val_m.group(1))
 
+    cb_idx = len(field_answers)
     for name, values in checkbox_groups.items():
         if name in field_answers:
             continue
-        # Для чекбоксов выбираем первый вариант
-        field_answers[name] = values[0]
+        q_idx = cb_idx
+        cb_idx += 1
+        q_text = questions[q_idx] if q_idx < len(questions) else ""
+        answer = get_questionnaire_answer(q_text).lower()
+        # Pick values that match keywords in the answer
+        selected = [v for v in values if any(kw in v.lower() for kw in answer.split() if len(kw) > 2)]
+        if not selected:
+            selected = [values[0]]  # fallback to first
+        field_answers[name] = selected[0]
+
+    # ── Select (dropdown) fields ───────────────────────────────
+    select_idx = cb_idx
+    for m in re.finditer(r'<select[^>]+name="(task_\d+)"[^>]*>([\s\S]*?)</select>', html):
+        sel_name = m.group(1)
+        options_html = m.group(2)
+        options = re.findall(r'<option[^>]+value="([^"]*)"[^>]*>([^<]*)</option>', options_html)
+        if options and sel_name not in field_answers:
+            q_text = questions[select_idx] if select_idx < len(questions) else ""
+            select_idx += 1
+            answer = get_questionnaire_answer(q_text).lower()
+            # Pick best matching option
+            best = options[0][0]  # default first
+            for val, label in options:
+                if any(kw in label.lower() for kw in answer.split() if len(kw) > 2):
+                    best = val
+                    break
+            field_answers[sel_name] = best
 
     return questions, field_answers
 
@@ -874,6 +1207,16 @@ def _parse_questionnaire_rich(html: str) -> list:
                        "text": q_texts[q_idx] if q_idx < len(q_texts) else "", "options": options})
         q_idx += 1
 
+    # Select (dropdown) fields
+    for m in re.finditer(r'<select[^>]+name="(task_\d+)"[^>]*>([\s\S]*?)</select>', html):
+        sel_name = m.group(1)
+        options_html = m.group(2)
+        options = re.findall(r'<option[^>]+value="([^"]*)"[^>]*>([^<]*)</option>', options_html)
+        q_text = q_texts[q_idx] if q_idx < len(q_texts) else ""
+        q_idx += 1
+        result.append({"field": sel_name, "type": "select", "text": q_text,
+                       "options": [{"value": v, "label": l} for v, l in options]})
+
     return result
 
 
@@ -920,11 +1263,35 @@ async def fill_and_submit_questionnaire(acc: dict, vid: str,
             # LLM-заполнение опросника (если включено)
             if CONFIG.llm_fill_questionnaire and CONFIG.llm_enabled and _openai_available and questions:
                 rich_qs = _parse_questionnaire_rich(html)
-                llm_ans = generate_llm_questionnaire_answers(rich_qs, vacancy_title, company)
+                resume_text = ""
+                if CONFIG.llm_use_resume:
+                    resume_text = fetch_resume_text(acc)
+                llm_ans = generate_llm_questionnaire_answers(rich_qs, vacancy_title, company, resume_text=resume_text)
                 if llm_ans:
-                    overridden = [f for f in llm_ans if f in field_answers]
+                    # Validate LLM answers against actual options
+                    rich_fields = {q["field"]: q for q in rich_qs}
+                    validated_ans = {}
+                    for field, llm_val in llm_ans.items():
+                        if field in rich_fields:
+                            q = rich_fields[field]
+                            if q["type"] in ("radio", "checkbox", "select") and q["options"]:
+                                valid_values = [o["value"] for o in q["options"]]
+                                if llm_val in valid_values:
+                                    validated_ans[field] = llm_val
+                                else:
+                                    # Try fuzzy match (case-insensitive strip)
+                                    matched = [v for v in valid_values if v.lower().strip() == llm_val.lower().strip()]
+                                    if matched:
+                                        validated_ans[field] = matched[0]
+                                    else:
+                                        log_debug(f"LLM answer '{llm_val}' not in options {valid_values}, skipping field {field}")
+                            else:
+                                validated_ans[field] = llm_val
+                        else:
+                            validated_ans[field] = llm_val
+                    overridden = [f for f in validated_ans if f in field_answers]
                     for f in overridden:
-                        field_answers[f] = llm_ans[f]
+                        field_answers[f] = validated_ans[f]
                     log_debug(f"Questionnaire {vid}: LLM заполнил {len(overridden)}/{len(field_answers)} полей: {overridden}")
                 else:
                     log_debug(f"Questionnaire {vid}: LLM вернул пустой ответ, используем шаблоны")
@@ -937,7 +1304,7 @@ async def fill_and_submit_questionnaire(acc: dict, vid: str,
             data = aiohttp.FormData()
             data.add_field("resume_hash", acc["resume_hash"])
             data.add_field("vacancy_id", vid)
-            data.add_field("letter", acc["letter"])
+            data.add_field("letter", _randomize_text(acc.get("letter", "")))
             data.add_field("lux", "true")
 
             for name in ("_xsrf", "uidPk", "guid", "startTime", "testRequired"):
@@ -950,7 +1317,7 @@ async def fill_and_submit_questionnaire(acc: dict, vid: str,
             # Шаг 3: POST
             async with session.post(
                 url_form,
-                headers={"X-Xsrftoken": acc["cookies"]["_xsrf"], "Referer": url_form},
+                headers={"X-Xsrftoken": acc.get("cookies", {}).get("_xsrf", ""), "Referer": url_form},
                 data=data,
                 timeout=aiohttp.ClientTimeout(total=15),
                 allow_redirects=False,
@@ -984,17 +1351,78 @@ async def fill_and_submit_questionnaire(acc: dict, vid: str,
         return "error", {"exception": str(e)}
 
 
+def _check_vacancy_before_apply(acc: dict, vid: str) -> dict:
+    """Pre-check vacancy before applying: detect impossible responses and experience mismatches.
+    Returns {"ok": bool, "reason": str}
+    """
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    try:
+        r = requests.get(
+            f"https://hh.ru/applicant/vacancy_response/popup?vacancyId={vid}",
+            headers={"User-Agent": ua, "Accept": "application/json, */*",
+                     "Referer": f"https://hh.ru/vacancy/{vid}"},
+            cookies=acc.get("cookies", {}),
+            timeout=10, verify=False,
+        )
+        if r.status_code not in (200,):
+            return {"ok": True, "reason": ""}  # can't check, allow
+        data = r.json()
+        # Check responseImpossible
+        resp_status = data.get("responseStatus") or {}
+        if resp_status.get("responseImpossible"):
+            reason = resp_status.get("responseImpossibleReason", "responseImpossible")
+            return {"ok": False, "reason": str(reason)}
+        # Check resume inconsistencies (experience type mismatch)
+        body = data.get("body", {})
+        inner_rs = body.get("responseStatus", resp_status)
+        incon_data = inner_rs.get("resumeInconsistencies", resp_status.get("resumeInconsistencies", {}))
+        if isinstance(incon_data, dict):
+            for resume_entry in incon_data.get("resume", []):
+                for inc in (resume_entry.get("inconsistencies", {}).get("inconsistency", [])):
+                    if inc.get("type") == "EXPERIENCE":
+                        return {"ok": False, "reason": f"опыт: нужен {inc.get('required','?')}, есть {inc.get('actual','?')}"}
+        elif isinstance(incon_data, list):
+            for inc in incon_data:
+                if isinstance(inc, dict) and inc.get("type") == "EXPERIENCE":
+                    return {"ok": False, "reason": f"несовпадение опыта"}
+
+        # Extract contactInfo if available
+        contact = {}
+        sv = inner_rs.get("shortVacancy", {})
+        ci = sv.get("contactInfo", {})
+        if ci and (ci.get("email") or ci.get("fio")):
+            contact = {
+                "fio": ci.get("fio", ""),
+                "email": ci.get("email", ""),
+                "phone": "",
+            }
+            phones = ci.get("phones", {}).get("phones", [])
+            if phones:
+                p = phones[0]
+                contact["phone"] = f"+{p.get('country','')}{p.get('city','')}{p.get('number','')}"
+
+        return {"ok": True, "reason": "", "contact": contact}
+    except Exception as e:
+        log_debug(f"_check_vacancy_before_apply {vid}: {e}")
+        return {"ok": True, "reason": ""}  # on error, allow apply
+
+
 async def send_response_async(acc: dict, vid: str) -> tuple:
     """Асинхронная отправка отклика. Возвращает (результат, инфо)"""
     log_debug(f"📤 ОТПРАВКА ОТКЛИКА на вакансию {vid} | Аккаунт: {acc['name']}")
 
-    headers = get_headers(acc["cookies"]["_xsrf"])
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    if not xsrf:
+        return "error", {"exception": "Missing _xsrf token"}
+    headers = get_headers(xsrf)
+
+    letter = _randomize_text(acc.get("letter", ""))
 
     data = aiohttp.FormData()
     data.add_field("resume_hash", acc["resume_hash"])
     data.add_field("vacancy_id", vid)
     data.add_field("letterRequired", "true")
-    data.add_field("letter", acc["letter"])
+    data.add_field("letter", letter)
     data.add_field("lux", "true")
     data.add_field("ignore_postponed", "true")
 
@@ -1053,7 +1481,7 @@ async def send_response_async(acc: dict, vid: str) -> tuple:
                         "title": glom(p, "responseStatus.shortVacancy.name", default=""),
                         "company": glom(p, "responseStatus.shortVacancy.company.name", default=""),
                     }
-                except:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
             return "test", info
 
@@ -1066,26 +1494,52 @@ async def send_response_async(acc: dict, vid: str) -> tuple:
 
 
 def check_limit(acc: dict) -> bool:
-    """True если лимит активен"""
-    headers = get_headers(acc["cookies"]["_xsrf"])
+    """True если лимит активен. Uses GET popup (no side effects)."""
+    # GET popup — safe, no side effects, no wasted apply slots
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    if not xsrf:
+        return True
     try:
-        r = requests.post(
-            "https://hh.ru/applicant/vacancy_response/popup",
-            headers=headers, cookies=acc["cookies"],
-            files={"resume_hash": (None, acc["resume_hash"]), "vacancy_id": (None, "1")},
-            timeout=10
+        r_search = requests.get(
+            "https://hh.ru/search/vacancy?text=&area=1&page=0",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                     "Accept": "text/html"},
+            cookies=acc["cookies"], verify=False, timeout=10,
+        )
+        vids = re.findall(r'/vacancy/(\d+)', r_search.text)
+        if not vids:
+            return True
+        vid = vids[0]
+        # Use GET popup — safe, no side effects
+        r = requests.get(
+            f"https://hh.ru/applicant/vacancy_response/popup?vacancyId={vid}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                     "Accept": "application/json", "X-Xsrftoken": xsrf},
+            cookies=acc["cookies"], verify=False, timeout=10,
         )
         return "negotiations-limit-exceeded" in r.text
-    except:
+    except Exception:
         return True
 
 
 def touch_resume(acc: dict) -> tuple:
     """
     Поднять резюме в поиске.
+    Tries OAuth API first (no captcha), falls back to web.
     Возвращает (success: bool, message: str)
     """
-    headers = get_headers(acc["cookies"]["_xsrf"])
+    # Try OAuth first — no captcha!
+    ok, msg = _oauth_touch_resume(acc)
+    if ok:
+        return True, msg
+    if "429" not in msg:
+        log_debug(f"touch_resume OAuth failed: {msg}, trying web fallback")
+
+    # Fallback to web (may hit captcha)
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    if not xsrf:
+        return False, msg or "Missing _xsrf token"
+    headers = get_headers(xsrf)
     resume_hash = acc["resume_hash"]
 
     touch_files = {
@@ -1103,14 +1557,14 @@ def touch_resume(acc: dict) -> tuple:
         )
 
         if response.status_code == 200:
-            return True, "Резюме поднято!"
+            return True, "Резюме поднято (web)!"
         elif response.status_code == 429:
             return False, "Слишком часто (429)"
         else:
-            return False, f"HTTP {response.status_code}"
+            return False, msg or f"HTTP {response.status_code}"
 
     except Exception as e:
-        return False, f"Ошибка: {str(e)[:30]}"
+        return False, msg or f"Ошибка: {str(e)[:30]}"
 
 
 def fetch_hh_negotiations_stats(acc: dict, max_pages: int = 20) -> dict:
@@ -1131,6 +1585,7 @@ def fetch_hh_negotiations_stats(acc: dict, max_pages: int = 20) -> dict:
         "interviews_list": [],
         "neg_ids": [],
         "auth_error": False,
+        "unread_by_employer": 0,  # count of negotiations where employer hasn't read our messages
     }
     cutoff = datetime.now().astimezone() - timedelta(days=60)
 
@@ -1230,6 +1685,20 @@ def fetch_hh_negotiations_stats(acc: dict, max_pages: int = 20) -> dict:
             if _is_login_page(body):
                 break
 
+            # On first page, extract SSR data for conversationUnreadByEmployerCount
+            if page == 0:
+                try:
+                    ssr = parse_hh_lux_ssr(body)
+                    topic_list = ssr.get("topicList", [])
+                    if isinstance(topic_list, list):
+                        for topic in topic_list:
+                            if isinstance(topic, dict):
+                                cnt = topic.get("conversationUnreadByEmployerCount", 0)
+                                if isinstance(cnt, int) and cnt > 0:
+                                    result["unread_by_employer"] += 1
+                except Exception:
+                    pass
+
             parts = re.split(r'data-qa="negotiations-item"', body)
             if len(parts) <= 1:
                 break
@@ -1261,24 +1730,27 @@ def fetch_hh_negotiations_stats(acc: dict, max_pages: int = 20) -> dict:
 
 
 def _fetch_chat_list(acc: dict, max_pages: int = 5) -> tuple:
-    """Fetch paginated chat list from /chat/messages API.
+    """Fetch paginated chat list from chatik.hh.ru/chatik/api/chats.
     Returns (items_by_id, display_info, current_participant_id).
     items_by_id: {str(item_id): item_dict}
     """
+    _ensure_chatik_cookies(acc)
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, */*",
-        "Referer": "https://hh.ru/applicant/negotiations",
+        "Origin": "https://chatik.hh.ru",
+        "Referer": "https://chatik.hh.ru/",
+        "X-XSRFToken": xsrf,
     }
     items_by_id: dict = {}
     display_info: dict = {}
     current_participant_id: str = ""
 
     for page_num in range(max_pages):
-        # HH chat list uses page= parameter (nextFrom is always null)
-        url = f"https://hh.ru/chat/messages?page={page_num}"
+        url = f"https://chatik.hh.ru/chatik/api/chats?page={page_num}"
         try:
-            resp = requests.get(url, cookies=acc["cookies"], headers=headers, timeout=15)
+            resp = requests.get(url, cookies=acc["cookies"], headers=headers, timeout=15, verify=False)
             if resp.status_code in (401, 403) or _is_login_page(resp.text):
                 break
             if resp.status_code != 200:
@@ -1288,10 +1760,9 @@ def _fetch_chat_list(acc: dict, max_pages: int = 5) -> tuple:
             log_debug(f"_fetch_chat_list error: {e}")
             break
 
-        chats_data = data.get("chats", {})
-        chats_obj = chats_data.get("chats") or {}
+        chats_obj = data.get("chats", {})
         items = chats_obj.get("items", [])
-        display_info.update(chats_data.get("chatsDisplayInfo", {}))
+        display_info.update(data.get("chatsDisplayInfo", {}))
 
         for item in items:
             item_id = str(item.get("id", ""))
@@ -1300,7 +1771,9 @@ def _fetch_chat_list(acc: dict, max_pages: int = 5) -> tuple:
             if not current_participant_id:
                 current_participant_id = item.get("currentParticipantId", "")
 
-        if not chats_obj.get("hasNextPage"):
+        # Check pagination: if fewer items than perPage, we've reached the end
+        per_page = chats_obj.get("perPage", 20)
+        if len(items) < per_page:
             break
 
     return items_by_id, display_info, current_participant_id
@@ -1499,7 +1972,7 @@ def send_negotiation_message(acc: dict, neg_id: str, text: str, topic_id: str = 
                 "Origin": "https://chatik.hh.ru",
                 "X-XSRFToken": xsrf,
             },
-            json={"chatId": int(neg_id), "idempotencyKey": str(_uuid.uuid4()), "text": text},
+            json={"chatId": int(str(neg_id).strip()), "idempotencyKey": str(_uuid.uuid4()), "text": text},
             timeout=15,
             verify=False,
         )
@@ -1513,6 +1986,30 @@ def send_negotiation_message(acc: dict, neg_id: str, text: str, topic_id: str = 
     except Exception as e:
         log_debug(f"send_negotiation_message {neg_id} error: {e}")
         return False
+
+
+def _mark_chat_read(acc: dict, chat_id: str, message_id: str):
+    """Mark a chatik chat as read up to the given message ID."""
+    try:
+        cid = int(str(chat_id).strip())
+        mid = int(str(message_id).strip())
+    except (ValueError, TypeError):
+        return
+    _ensure_chatik_cookies(acc)
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    try:
+        requests.post(
+            "https://chatik.hh.ru/chatik/api/mark_read",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                     "Accept": "application/json", "Content-Type": "application/json",
+                     "Origin": "https://chatik.hh.ru", "Referer": "https://chatik.hh.ru/",
+                     "X-XSRFToken": xsrf},
+            cookies=acc["cookies"],
+            json={"chatId": cid, "messageId": mid},
+            verify=False, timeout=5
+        )
+    except Exception as e:
+        log_debug(f"_mark_chat_read {cid}: {e}")
 
 
 def generate_llm_reply(conversation: list, employer_name: str = "", cover_letter: str = "", resume_text: str = "") -> str:
@@ -1553,8 +2050,9 @@ def generate_llm_reply(conversation: list, employer_name: str = "", cover_letter
 
     if mode == "roundrobin":
         # Pick one profile by round-robin, try only that one
-        idx = _llm_rr_index % len(profiles)
-        _llm_rr_index += 1
+        with _llm_rr_lock:
+            idx = _llm_rr_index % len(profiles)
+            _llm_rr_index += 1
         profile = profiles[idx]
         pname = profile.get("name") or profile.get("model") or f"профиль {idx}"
         model = profile.get("model") or "gpt-4o-mini"
@@ -1597,9 +2095,11 @@ def generate_llm_reply(conversation: list, employer_name: str = "", cover_letter
         return ""
 
 
-def generate_llm_questionnaire_answers(rich_questions: list, vacancy_title: str = "", company: str = "") -> dict:
+def generate_llm_questionnaire_answers(rich_questions: list, vacancy_title: str = "", company: str = "",
+                                       resume_text: str = "") -> dict:
     """Заполняет ответы на опросник работодателя через LLM.
     rich_questions — список из _parse_questionnaire_rich().
+    resume_text — опционально текст резюме для контекста.
     Возвращает {field: value} или {} при ошибке.
     """
     if not _openai_available or not rich_questions:
@@ -1627,11 +2127,14 @@ def generate_llm_questionnaire_answers(rich_questions: list, vacancy_title: str 
         elif qtype == "checkbox":
             opts = " / ".join(f'"{o["label"]}" (value={o["value"]})' for o in q.get("options", []))
             lines.append(f'{i}. [чекбокс: {opts}] {qtext}')
+        elif qtype == "select":
+            opts = " / ".join(f'"{o["label"]}" (value={o["value"]})' for o in q.get("options", []))
+            lines.append(f'{i}. [выпадающий список: {opts}] {qtext}')
     lines += [
         "",
-        "Правила: пиши от первого лица (женский род), ищу удалённую работу.",
-        "Для текста — 1–3 предложения, кратко и профессионально.",
-        "Для radio/checkbox — верни точное value из скобок (цифру или код).",
+        "Заполни анкету от первого лица. Отвечай кратко и профессионально.",
+        "Для текста — 1–3 предложения.",
+        "Для radio/checkbox/select — верни точное value из скобок (цифру или код).",
         "",
         "Верни ТОЛЬКО JSON без пояснений:",
         "{"
@@ -1641,6 +2144,8 @@ def generate_llm_questionnaire_answers(rich_questions: list, vacancy_title: str 
     lines.append("}")
 
     system = "Ты помогаешь заполнять анкеты при трудоустройстве. Возвращай ТОЛЬКО валидный JSON, без markdown и пояснений."
+    if resume_text:
+        system += f"\n\nРезюме кандидата:\n{resume_text[:2000]}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(lines)}]
 
     for i, profile in enumerate(profiles):
@@ -1972,11 +2477,16 @@ def fetch_resume_text(acc: dict) -> str:
         return ""
 
     now = time.time()
-    cached = _resume_cache.get(resume_hash)
-    if cached:
-        text, ts = cached
-        if now - ts < _RESUME_CACHE_TTL:
-            return text
+    with _resume_cache_lock:
+        cached = _resume_cache.get(resume_hash)
+        if cached:
+            text, ts = cached
+            if now - ts < _RESUME_CACHE_TTL:
+                return text
+        # Clean expired entries periodically (max 50 per call)
+        expired = [k for k, (_, ts) in list(_resume_cache.items()) if now - ts >= _RESUME_CACHE_TTL]
+        for k in expired:
+            _resume_cache.pop(k, None)
 
     try:
         r = requests.get(
@@ -1996,7 +2506,8 @@ def fetch_resume_text(acc: dict) -> str:
             return ""
         text = _parse_resume_html(r.text)
         if text:
-            _resume_cache[resume_hash] = (text, now)
+            with _resume_cache_lock:
+                _resume_cache[resume_hash] = (text, now)
             log_debug(f"fetch_resume_text: ✅ {len(text)} симв. для {resume_hash[:8]}")
         else:
             log_debug(f"fetch_resume_text: ⚠️ пустой результат для {resume_hash[:8]}")
@@ -2011,11 +2522,14 @@ def auto_decline_discards(acc: dict) -> int:
     Авто-отклонение дискардов в переговорах.
     Возвращает количество отклонённых.
     """
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    if not xsrf:
+        return 0
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": "https://hh.ru/applicant/negotiations",
-        "X-Xsrftoken": acc["cookies"]["_xsrf"],
+        "X-Xsrftoken": xsrf,
     }
     declined = 0
     try:
@@ -2047,7 +2561,7 @@ def auto_decline_discards(acc: dict) -> int:
                     "https://hh.ru/applicant/negotiations/decline",
                     headers=post_headers,
                     cookies=acc["cookies"],
-                    data=f"topicId={tid}&_xsrf={acc['cookies']['_xsrf']}",
+                    data=f"topicId={tid}&_xsrf={xsrf}",
                     verify=False, timeout=10
                 )
                 if r2.status_code in (200, 302):
@@ -2130,6 +2644,13 @@ class AccountState:
         self.limit_exceeded = False
         self.limit_reset_time = None
 
+        self.use_oauth = bool(acc_data.get("use_oauth", False))  # per-account OAuth toggle
+        self.oauth_status = ""  # "active", "no_token", "error"
+
+        self.daily_sent = 0  # откликов за сегодня
+        self.daily_date = datetime.now().strftime("%Y-%m-%d")  # дата сброса счётчика
+        self.hard_stopped = False  # жёсткая остановка (лимит или daily)
+
         self.resume_touch_enabled = True
         self.last_resume_touch = None
         self.next_resume_touch = None
@@ -2143,9 +2664,12 @@ class AccountState:
         self.recent_responses = deque(maxlen=10)
 
         self.salary_skipped = 0       # Пропущено из-за зарплаты
+        self.schedule_skipped = 0     # Пропущено из-за формата работы
         self.vacancy_salaries = {}    # {vid: salary_from_rub_or_None}
+        self.vacancy_schedules = {}   # {vid: set_of_schedule_ids}
         self.vacancy_meta = {}        # {vid: {title, company}} из HTML поиска
         self.questionnaire_sent = 0   # Успешно пройдено опросов
+        self.inconsistent_skipped = 0  # Пропущено из-за несовпадения опыта
 
         self.hh_interviews = 0
         self.hh_interviews_recent = 0  # за последние 60 дней
@@ -2156,6 +2680,7 @@ class AccountState:
         self.hh_possible_offers = []
         self.hh_stats_updated = None
         self.hh_stats_loading = False
+        self.hh_unread_by_employer = 0  # count of negotiations where employer hasn't read our messages
 
         # Resume statistics
         self.resume_views_7d = 0
@@ -2196,6 +2721,8 @@ class AccountState:
         self.hh_interview_neg_ids: list = [] # negotiation IDs from last INTERVIEW fetch
         self.llm_enabled: bool = True        # per-account LLM toggle (overridden by global CONFIG.llm_enabled)
         self._llm_lock = threading.Lock()    # prevents concurrent _process_llm_replies for this account
+        self._msg_consecutive: dict = {}     # {neg_id: count} consecutive applicant messages without HR reply
+        self._test_failures: dict = {}       # {vid: fail_count} questionnaire fill failures
 
 
 # ============================================================
@@ -2250,6 +2777,9 @@ class BotManager:
         # Prevents double-sends when multiple accounts share the same HH user (same cur_pid)
         self._llm_sent_global: set = set()
         self._llm_sent_lock = threading.Lock()
+        # HR contacts collected from contactInfo during pre-checks
+        self.hr_contacts: list = []  # capped at 500
+        self._hr_contacts_lock = threading.Lock()
 
     def _build_session_urls(self, resume_hash: str) -> list[str]:
         """URL поиска для браузерной сессии: resume-URL + keyword-URLs из глобального пула."""
@@ -2288,10 +2818,12 @@ class BotManager:
         self.temp_states[temp_idx] = state
         ts["bot_active"] = True
         save_browser_sessions(self.temp_sessions)
-        t1 = threading.Thread(target=self._run_account_worker, args=(900 + temp_idx, state), daemon=True)
-        t2 = threading.Thread(target=self._fetch_hh_stats_worker, args=(900 + temp_idx, state), daemon=True)
+        log_debug(f"activate_session({temp_idx}): starting threads...")
+        t1 = threading.Thread(target=self._run_account_worker, args=(900 + temp_idx, state), daemon=True, name=f"worker-{temp_idx}")
+        t2 = threading.Thread(target=self._fetch_hh_stats_worker, args=(900 + temp_idx, state), daemon=True, name=f"stats-{temp_idx}")
         t1.start()
         t2.start()
+        log_debug(f"activate_session({temp_idx}): threads started t1={t1.is_alive()} t2={t2.is_alive()}")
         self._add_log(state.short, "yellow", f"🌐 Сессия {ts['name']} запущена как бот", "success")
         return True
 
@@ -2325,9 +2857,15 @@ class BotManager:
             t1.start()
             t2.start()
         # Авто-активация браузерных сессий, которые были запущены до перезапуска
+        log_debug(f"start(): {len(self.temp_sessions)} temp sessions to check")
         for i, ts in enumerate(self.temp_sessions):
+            log_debug(f"start(): session {i}: bot_active={ts.get('bot_active')}, resume_hash={bool(ts.get('resume_hash'))}")
             if ts.get("bot_active") and ts.get("resume_hash"):
-                self.activate_session(i)
+                try:
+                    result = self.activate_session(i)
+                    log_debug(f"start(): activate_session({i}) = {result}")
+                except Exception as e:
+                    log_debug(f"start(): activate_session({i}) ERROR: {e}")
         self._add_log("", "", "🚀 Бот запущен", "success")
 
     def stop(self):
@@ -2370,6 +2908,28 @@ class BotManager:
                 else f"🤖 LLM выключен для {state.short}"
             )
             self._add_log(state.short, state.color, msg, "info")
+
+    def toggle_account_oauth(self, idx: int):
+        state = None
+        if 0 <= idx < len(self.account_states):
+            state = self.account_states[idx]
+        else:
+            temp_idx = idx - len(self.account_states)
+            state = self.temp_states.get(temp_idx)
+        if state:
+            state.use_oauth = not state.use_oauth
+            mode = "🔑 OAuth" if state.use_oauth else "🌐 Web"
+            self._add_log(state.short, state.color, f"{mode} откликов для {state.short}", "info")
+            # Persist to account data
+            state.acc["use_oauth"] = state.use_oauth
+            if 0 <= idx < len(accounts_data):
+                accounts_data[idx]["use_oauth"] = state.use_oauth
+                save_accounts()
+            else:
+                temp_idx = idx - len(self.account_states)
+                if 0 <= temp_idx < len(self.temp_sessions):
+                    self.temp_sessions[temp_idx]["use_oauth"] = state.use_oauth
+                    save_browser_sessions(self.temp_sessions)
 
     def trigger_resume_touch(self, idx: int):
         if 0 <= idx < len(self.account_states):
@@ -2510,6 +3070,7 @@ class BotManager:
                 "hh_viewed": s.hh_viewed,
                 "hh_discards": s.hh_discards,
                 "hh_not_viewed": s.hh_not_viewed,
+                "hh_unread_by_employer": s.hh_unread_by_employer,
                 "hh_stats_updated": hh_updated_str,
                 "hh_stats_loading": s.hh_stats_loading,
                 "hh_interviews_list": s.hh_interviews_list[:20],
@@ -2530,6 +3091,10 @@ class BotManager:
                 "url_stats": dict(s.url_stats),
                 "cookies_expired": s.cookies_expired,
                 "llm_enabled": s.llm_enabled,
+                "use_oauth": s.use_oauth,
+                "daily_sent": s.daily_sent,
+                "daily_limit": CONFIG.daily_apply_limit,
+                "hard_stopped": s.hard_stopped,
             })
 
         # Temp browser sessions — append after regular accounts
@@ -2582,6 +3147,7 @@ class BotManager:
                     "hh_viewed": s.hh_viewed,
                     "hh_discards": s.hh_discards,
                     "hh_not_viewed": s.hh_not_viewed,
+                    "hh_unread_by_employer": s.hh_unread_by_employer,
                     "hh_stats_updated": ts_hh_updated_str,
                     "hh_stats_loading": s.hh_stats_loading,
                     "hh_interviews_list": s.hh_interviews_list[:20],
@@ -2602,6 +3168,7 @@ class BotManager:
                     "url_stats": dict(s.url_stats),
                     "cookies_expired": s.cookies_expired,
                     "llm_enabled": s.llm_enabled,
+                    "use_oauth": s.use_oauth,
                 })
             else:
                 # Неактивная сессия — заглушка
@@ -2623,7 +3190,8 @@ class BotManager:
                     "limit_exceeded": False, "paused": False,
                     "next_resume_touch": "", "resume_touch_status": "",
                     "hh_interviews": 0, "hh_viewed": 0, "hh_discards": 0,
-                    "hh_not_viewed": 0, "hh_stats_updated": "", "hh_stats_loading": False,
+                    "hh_not_viewed": 0, "hh_unread_by_employer": 0,
+                    "hh_stats_updated": "", "hh_stats_loading": False,
                     "hh_interviews_list": [], "hh_possible_offers": [], "action_history": [],
                     "resume_views_7d": 0, "resume_views_new": 0, "resume_shows_7d": 0,
                     "resume_invitations_7d": 0, "resume_invitations_new": 0,
@@ -2635,6 +3203,10 @@ class BotManager:
                     "url_stats": {},
                     "cookies_expired": False,
                     "llm_enabled": True,
+                    "use_oauth": bool(ts.get("use_oauth", False)),
+                    "daily_sent": 0,
+                    "daily_limit": CONFIG.daily_apply_limit,
+                    "hard_stopped": False,
                 })
 
         storage_stats = get_stats()
@@ -2655,10 +3227,19 @@ class BotManager:
                 "limit_check_interval": CONFIG.limit_check_interval,
                 "min_salary": CONFIG.min_salary,
                 "auto_pause_errors": CONFIG.auto_pause_errors,
+                "auto_apply_tests": CONFIG.auto_apply_tests,
+                "use_oauth_apply": CONFIG.use_oauth_apply,
+                "daily_apply_limit": CONFIG.daily_apply_limit,
+                "stop_on_hh_limit": CONFIG.stop_on_hh_limit,
+                "allowed_schedules": CONFIG.allowed_schedules,
                 "questionnaire_templates": CONFIG.questionnaire_templates,
                 "questionnaire_default_answer": CONFIG.questionnaire_default_answer,
                 "letter_templates": CONFIG.letter_templates,
                 "url_pool": CONFIG.url_pool,
+                "skip_inconsistent": CONFIG.skip_inconsistent,
+                "filter_agencies": CONFIG.filter_agencies,
+                "filter_low_competition": CONFIG.filter_low_competition,
+                "search_period_days": CONFIG.search_period_days,
                 "llm_enabled": CONFIG.llm_enabled,
                 "llm_auto_send": CONFIG.llm_auto_send,
                 "llm_fill_questionnaire": CONFIG.llm_fill_questionnaire,
@@ -2695,6 +3276,17 @@ class BotManager:
 
     def _run_account_worker(self, idx: int, state: AccountState) -> None:
         """Thread worker for an account — mirrors TUI run_account_worker logic"""
+        acc = state.acc
+        try:
+            self._run_account_worker_inner(idx, state)
+        except Exception as e:
+            log_debug(f"WORKER CRASHED [{state.short}]: {e}")
+            import traceback
+            log_debug(traceback.format_exc())
+            state.status = "error"
+            state.status_detail = f"Worker crash: {str(e)[:50]}"
+
+    def _run_account_worker_inner(self, idx: int, state: AccountState) -> None:
         acc = state.acc
 
         while not self._stop_event.is_set() and not state._deleted:
@@ -2786,8 +3378,9 @@ class BotManager:
                 "info",
             )
 
-            results_by_url, salary_map = asyncio.run(self._collect_all_urls_parallel(state))
+            results_by_url, salary_map, schedule_map = asyncio.run(self._collect_all_urls_parallel(state))
             state.vacancy_salaries = salary_map
+            state.vacancy_schedules = schedule_map
 
             all_vacancies = []
             for url in effective_urls:
@@ -2827,15 +3420,30 @@ class BotManager:
             already_count = 0
             test_count = 0
             salary_skipped = 0
+            schedule_skipped = 0
+            apply_tests = state.apply_tests or CONFIG.auto_apply_tests
 
             for vid in unique_vacancies:
                 if is_applied(acc["name"], vid):
                     already_count += 1
                     state.already_applied += 1
-                elif is_test(vid) and not state.apply_tests:
-                    # Пропускаем тест-вакансии только если apply_tests выключен
+                elif (is_test(vid) or state._test_failures.get(vid, 0) >= 2) and not apply_tests:
                     test_count += 1
                     state.tests += 1
+                elif CONFIG.allowed_schedules:
+                    sched = schedule_map.get(vid, set())
+                    if sched and not sched.intersection(CONFIG.allowed_schedules):
+                        schedule_skipped += 1
+                        state.schedule_skipped += 1
+                    elif CONFIG.min_salary > 0:
+                        sal = salary_map.get(vid)
+                        if sal is None or sal < CONFIG.min_salary:
+                            salary_skipped += 1
+                            state.salary_skipped += 1
+                        else:
+                            filtered.append(vid)
+                    else:
+                        filtered.append(vid)
                 elif CONFIG.min_salary > 0:
                     sal = salary_map.get(vid)
                     if sal is None or sal < CONFIG.min_salary:
@@ -2847,9 +3455,10 @@ class BotManager:
                     filtered.append(vid)
 
             sal_msg = f", 💰 зарплата {salary_skipped}" if CONFIG.min_salary > 0 else ""
+            sched_msg = f", 🏢 формат {schedule_skipped}" if CONFIG.allowed_schedules else ""
             self._add_log(
                 state.short, state.color,
-                f"🔍 Фильтрация: ✅ уже {already_count}, 🧪 тест {test_count}{sal_msg}, 🆕 новые {len(filtered)}",
+                f"🔍 Фильтрация: ✅ уже {already_count}, 🧪 тест {test_count}{sal_msg}{sched_msg}, 🆕 новые {len(filtered)}",
                 "info",
             )
 
@@ -2866,6 +3475,37 @@ class BotManager:
                 continue
 
             random.shuffle(filtered)
+
+            # Hot leads priority: fetch possible_job_offers and put matching vacancies first
+            try:
+                r_offers = requests.get(
+                    "https://hh.ru/shards/applicant/negotiations/possible_job_offers",
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "application/json",
+                        "X-Xsrftoken": acc.get("cookies", {}).get("_xsrf", ""),
+                        "Referer": "https://hh.ru/applicant/negotiations",
+                    },
+                    cookies=acc.get("cookies", {}), verify=False, timeout=10,
+                )
+                if r_offers.status_code == 200:
+                    offers_data = r_offers.json()
+                    offer_items = offers_data if isinstance(offers_data, list) else offers_data.get("possibleJobOffers", [])
+                    offer_vids = set()
+                    for o in offer_items:
+                        vid_val = o.get("vacancyId", "")
+                        if vid_val:
+                            offer_vids.add(str(vid_val))
+                    if offer_vids:
+                        hot = [v for v in filtered if v in offer_vids]
+                        cold = [v for v in filtered if v not in offer_vids]
+                        filtered = hot + cold
+                        if hot:
+                            self._add_log(state.short, state.color,
+                                f"🔥 {len(hot)} горячих лидов в начале очереди", "success")
+            except Exception:
+                pass
+
             state.vacancies_queue = filtered
             state.total_vacancies = len(filtered)
             state.found_vacancies += len(all_vacancies)
@@ -2901,6 +3541,61 @@ class BotManager:
                 if state.short in self.vacancy_queues:
                     self.vacancy_queues[state.short]["current"] = i
 
+                # Daily limit check
+                today = datetime.now().strftime("%Y-%m-%d")
+                if state.daily_date != today:
+                    state.daily_sent = 0
+                    state.daily_date = today
+                    state.hard_stopped = False
+                    # Cleanup unbounded dicts on new day
+                    if len(state._test_failures) > 500:
+                        state._test_failures.clear()
+                    if len(state._msg_consecutive) > 500:
+                        state._msg_consecutive.clear()
+                if CONFIG.daily_apply_limit > 0 and state.daily_sent >= CONFIG.daily_apply_limit:
+                    state.hard_stopped = True
+                    state.paused = True
+                    state.status = "limit"
+                    state.status_detail = f"Дневной лимит: {state.daily_sent}/{CONFIG.daily_apply_limit}"
+                    self._add_log(state.short, state.color,
+                        f"🛑 Дневной лимит {CONFIG.daily_apply_limit} откликов. Пауза до завтра.", "error")
+                    break
+
+                # Pre-check: skip inconsistent vacancies if enabled
+                if CONFIG.skip_inconsistent:
+                    checked_batch = []
+                    for vid in batch:
+                        precheck = _check_vacancy_before_apply(acc, vid)
+                        if not precheck["ok"]:
+                            meta = state.vacancy_meta.get(vid, {})
+                            display_title = (meta.get("title") or vid)[:40]
+                            state.inconsistent_skipped += 1
+                            self._add_log(state.short, state.color,
+                                f"⏭ {display_title}: пропуск ({precheck['reason']})", "warning")
+                        else:
+                            checked_batch.append(vid)
+                            # Collect HR contact info if available
+                            contact = precheck.get("contact")
+                            if contact and (contact.get("email") or contact.get("fio")):
+                                meta = state.vacancy_meta.get(vid, {})
+                                entry = {
+                                    "vacancy_id": vid,
+                                    "title": meta.get("title", ""),
+                                    "company": meta.get("company", ""),
+                                    "fio": contact.get("fio", ""),
+                                    "email": contact.get("email", ""),
+                                    "phone": contact.get("phone", ""),
+                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                    "account": state.short,
+                                }
+                                with self._hr_contacts_lock:
+                                    if len(self.hr_contacts) < 500:
+                                        self.hr_contacts.append(entry)
+                    batch = checked_batch
+                    if not batch:
+                        i += batch_size
+                        continue
+
                 if len(batch) > 1:
                     self._add_log(
                         state.short, state.color,
@@ -2908,13 +3603,26 @@ class BotManager:
                         "info",
                     )
 
-                def _make_send_batch(b):
-                    async def send_batch():
-                        tasks = [send_response_async(acc, vid) for vid in b]
-                        return await asyncio.gather(*tasks, return_exceptions=True)
-                    return send_batch
-
-                results = asyncio.run(_make_send_batch(batch)())
+                # Choose apply method: OAuth API or Web (per-account or global)
+                if state.use_oauth or CONFIG.use_oauth_apply:
+                    # OAuth: synchronous, one by one (API doesn't support batch)
+                    results = []
+                    for vid in batch:
+                        try:
+                            result = _oauth_apply(acc, vid, acc.get("letter", ""))
+                            results.append(result)
+                        except Exception as e:
+                            results.append(e)
+                        if CONFIG.response_delay > 0:
+                            time.sleep(CONFIG.response_delay)
+                else:
+                    # Web: async batch via aiohttp
+                    def _make_send_batch(b):
+                        async def send_batch():
+                            tasks = [send_response_async(acc, vid) for vid in b]
+                            return await asyncio.gather(*tasks, return_exceptions=True)
+                        return send_batch
+                    results = asyncio.run(_make_send_batch(batch)())
 
                 for j, (vid, result_data) in enumerate(zip(batch, results)):
                     if isinstance(result_data, Exception):
@@ -2931,6 +3639,13 @@ class BotManager:
 
                     if result == "sent":
                         state.sent += 1
+                        # Daily counter
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        if state.daily_date != today:
+                            state.daily_sent = 0
+                            state.daily_date = today
+                            state.hard_stopped = False
+                        state.daily_sent += 1
                         state.consecutive_errors = 0  # сброс счётчика ошибок
                         # Дополняем info мета-данными из поиска если API не вернул title
                         if not info.get("title"):
@@ -2964,7 +3679,7 @@ class BotManager:
                         company = info.get("company", "")
                         display_title = title[:40] if title else vid
 
-                        if not state.apply_tests:
+                        if not (state.apply_tests or CONFIG.auto_apply_tests):
                             # Откликаться на тесты выключено — пропускаем
                             state.tests += 1
                             add_test_vacancy(vid, title, company,
@@ -2983,6 +3698,13 @@ class BotManager:
                                 state.sent += 1
                                 state.questionnaire_sent += 1
                                 state.consecutive_errors = 0
+                                # Daily counter
+                                today = datetime.now().strftime("%Y-%m-%d")
+                                if state.daily_date != today:
+                                    state.daily_sent = 0
+                                    state.daily_date = today
+                                    state.hard_stopped = False
+                                state.daily_sent += 1
                                 state.current_vacancy_title = title
                                 state.current_vacancy_company = company
                                 state.action_history.append(f"📝 {display_title[:25]}")
@@ -3007,14 +3729,17 @@ class BotManager:
                                               "error")
                                 break
                             else:
-                                # Не удалось — сохраняем как тест
+                                # Не удалось — считаем неудачи
+                                state._test_failures[vid] = state._test_failures.get(vid, 0) + 1
+                                if state._test_failures[vid] >= 2:
+                                    # Permanently mark as failed test after 2 attempts
+                                    add_test_vacancy(vid, title, company,
+                                                     acc["name"], acc.get("resume_hash", ""))
                                 state.tests += 1
-                                add_test_vacancy(vid, title, company,
-                                                 acc["name"], acc.get("resume_hash", ""))
                                 state.action_history.append(f"🧪 {display_title[:25]}")
                                 self._add_response(state, vid, title, company, "test")
                                 self._add_log(state.short, state.color,
-                                              f"🧪 Тест (не пройден): {display_title}", "warning")
+                                              f"🧪 Тест (не пройден, попытка {state._test_failures[vid]}): {display_title}", "warning")
                                 self._add_acc_event(state, "🧪", "test",
                                                     title or vid, company, "не пройден")
 
@@ -3027,27 +3752,48 @@ class BotManager:
 
                     elif result == "limit":
                         state.limit_exceeded = True
-                        state.limit_reset_time = datetime.now() + timedelta(
-                            minutes=CONFIG.limit_check_interval
-                        )
-                        state.status = "limit"
-                        state.status_detail = f"Проверка в {state.limit_reset_time.strftime('%H:%M')}"
-                        self._add_log(
-                            state.short, state.color,
-                            f"🚫 ЛИМИТ! Повторная попытка в {state.limit_reset_time.strftime('%H:%M')}",
-                            "error",
-                        )
+                        if CONFIG.stop_on_hh_limit:
+                            # Hard stop — no retries
+                            state.hard_stopped = True
+                            state.paused = True
+                            state.status = "limit"
+                            state.status_detail = "🛑 Лимит HH — остановлен до завтра"
+                            self._add_log(
+                                state.short, state.color,
+                                f"🛑 ЛИМИТ HH! Бот остановлен. Сбросится в 00:00 МСК. Снимите паузу вручную.",
+                                "error",
+                            )
+                        else:
+                            state.limit_reset_time = datetime.now() + timedelta(
+                                minutes=CONFIG.limit_check_interval
+                            )
+                            state.status = "limit"
+                            state.status_detail = f"Проверка в {state.limit_reset_time.strftime('%H:%M')}"
+                            self._add_log(
+                                state.short, state.color,
+                                f"🚫 ЛИМИТ! Повторная попытка в {state.limit_reset_time.strftime('%H:%M')}",
+                                "error",
+                            )
                         break
 
                     elif result == "auth_error":
-                        state.cookies_expired = True
-                        state.paused = True
-                        self._add_log(
-                            state.short, state.color,
-                            "⚠️ Куки протухли! Обновите куки и снимите паузу.", "error",
-                        )
-                        self._add_acc_event(state, "⚠️", "error", "Авторизация", "", "Обновите куки")
-                        break
+                        if state.use_oauth or CONFIG.use_oauth_apply:
+                            # OAuth mode — don't stop, just log warning
+                            self._add_log(
+                                state.short, state.color,
+                                "⚠️ Web cookies истекли (OAuth откликов продолжает работать)", "warning",
+                            )
+                            state.consecutive_errors += 1
+                            self._check_auto_pause(state)
+                        else:
+                            state.cookies_expired = True
+                            state.paused = True
+                            self._add_log(
+                                state.short, state.color,
+                                "⚠️ Куки протухли! Обновите куки и снимите паузу.", "error",
+                            )
+                            self._add_acc_event(state, "⚠️", "error", "Авторизация", "", "Обновите куки")
+                            break
 
                     elif result == "error":
                         state.errors += 1
@@ -3093,10 +3839,13 @@ class BotManager:
     async def _collect_all_urls_parallel(self, state: AccountState) -> tuple:
         """
         Параллельный сбор вакансий со ВСЕХ URL и страниц одновременно.
-        Возвращает (results_by_url: dict[url, set[ids]], salary_map: dict[vid, int|None])
+        Возвращает (results_by_url: dict[url, set[ids]], salary_map: dict[vid, int|None], schedule_map: dict[vid, set])
         """
         acc = state.acc
-        headers = get_headers(acc["cookies"]["_xsrf"])
+        xsrf = acc.get("cookies", {}).get("_xsrf", "")
+        if not xsrf:
+            return {}, {}, {}
+        headers = get_headers(xsrf)
         sem = asyncio.Semaphore(CONFIG.max_concurrent * 3)
 
         ssl_context = ssl.create_default_context()
@@ -3109,11 +3858,20 @@ class BotManager:
         url_pages = _url_pages_map()
         acc_url_pages = acc.get("url_pages", {})  # per-account override
         effective_urls = acc.get("urls") or [_url_entry(u)["url"] for u in CONFIG.url_pool]
+        # Build extra search filter params from config
+        # Note: HH only accepts ONE label param; low_competition takes priority
+        extra_params = ""
+        if CONFIG.filter_low_competition:
+            extra_params += "&label=low_performance"
+        elif CONFIG.filter_agencies:
+            extra_params += "&label=not_from_agency"
+        if CONFIG.search_period_days > 0:
+            extra_params += f"&search_period={CONFIG.search_period_days}"
         for url_idx, url in enumerate(effective_urls):
             pages = acc_url_pages.get(url) or url_pages.get(url, CONFIG.pages_per_url)
             sep = "&" if "?" in url else "?"
             for page in range(pages):
-                page_url = f"{url}{sep}page={page}"
+                page_url = f"{url}{sep}page={page}{extra_params}"
                 all_tasks.append((url_idx, url, page, page_url))
 
         total_tasks = len(all_tasks)
@@ -3133,14 +3891,16 @@ class BotManager:
                 state.current_page = page + 1
                 state.status_detail = f"Загрузка {completed}/{total_tasks}"
                 if html and _is_login_page(html):
-                    state.cookies_expired = True
-                    return url, set(), {}, {}
+                    if not (state.use_oauth or CONFIG.use_oauth_apply):
+                        state.cookies_expired = True
+                    return url, set(), {}, {}, {}
                 if html:
                     ids = parse_ids(html)
                     salaries = parse_salaries(html, ids)
                     meta = parse_vacancy_meta(html)
-                    return url, ids, salaries, meta
-                return url, set(), {}, {}
+                    schedules = parse_work_schedules(html, ids)
+                    return url, ids, salaries, meta, schedules
+                return url, set(), {}, {}, {}
 
             tasks = [
                 fetch_one(url_idx, url, page, page_url)
@@ -3148,16 +3908,20 @@ class BotManager:
             ]
             task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            schedule_map = {}
             for result in task_results:
                 if isinstance(result, Exception):
                     log_debug(f"❌ Ошибка при загрузке: {result}")
                     continue
-                url, ids, salaries, meta = result
+                url, ids, salaries, meta, schedules = result
                 results_by_url[url].extend(ids)
                 salary_map.update(salaries)
                 state.vacancy_meta.update(meta)
+                for vid, sched_set in schedules.items():
+                    if sched_set:
+                        schedule_map.setdefault(vid, set()).update(sched_set)
 
-        return {url: set(ids) for url, ids in results_by_url.items()}, salary_map
+        return {url: set(ids) for url, ids in results_by_url.items()}, salary_map, schedule_map
 
     def _process_llm_replies(self, state: AccountState) -> None:
         """Check recent unread negotiations for employer messages and auto-reply using LLM."""
@@ -3213,6 +3977,12 @@ class BotManager:
                 skipped_locked += 1
                 log_debug(f"LLM [{state.short}] {item_id}: чат заблокирован, пропуск кандидата «{last_text}»")
                 continue
+            # Early check: writePossibility from chatik API
+            write_poss = (item.get("writePossibility") or {}).get("name", "")
+            if write_poss not in ("ENABLED_FOR_ALL", "ENABLED_FOR_ALL_BY_EMPLOYER", ""):
+                skipped_locked += 1
+                log_debug(f"LLM [{state.short}] {item_id}: writePossibility={write_poss}, пропуск")
+                continue
             if unread == 0:
                 if from_employer and not wf:
                     # unread=0 но последнее от работодателя — юзер прочитал в браузере,
@@ -3266,14 +4036,17 @@ class BotManager:
             try:
                 # Early skip for chats confirmed closed by 409 in this session
                 if neg_id in state._llm_no_chat:
-                    item = items_by_id[neg_id]
+                    item = items_by_id.get(neg_id, {})
                     info = display_info.get(str(neg_id), {})
                     emp = (info.get("subtitle") or neg_id).strip(" ,")[:25]
                     self._add_log(state.short, state.color,
                         f"🤖 [{emp}] 🔒 переписка закрыта, пропуск", "warning", neg_id=neg_id)
                     continue
 
-                item = items_by_id[neg_id]
+                item = items_by_id.get(neg_id)
+                if not item:
+                    log_debug(f"LLM [{state.short}] {neg_id}: не найден в items_by_id, пропуск")
+                    continue
                 thread = _build_thread_from_chat_item(item, display_info, cur_pid, neg_id)
                 employer_short = thread.get("employer_name", neg_id)[:25]
                 if thread.get("error"):
@@ -3377,6 +4150,21 @@ class BotManager:
                     log_debug(f"LLM [{state.short}] {neg_id}: последнее реальное сообщение наше — уже ответили, пропуск")
                     state.llm_replied_msgs.add(key)
                     continue
+                # In-a-row limit: count consecutive applicant messages at the end of conversation
+                _consecutive_ours = 0
+                for _cm in reversed(conversation):
+                    if _cm.get("sender") == "applicant":
+                        _consecutive_ours += 1
+                    else:
+                        break
+                # Update tracking dict (reset when employer replied = _consecutive_ours is 0 or low)
+                state._msg_consecutive[neg_id] = _consecutive_ours
+                if _consecutive_ours >= 4:
+                    log_debug(f"LLM [{state.short}] {neg_id}: in_a_row_limit: {_consecutive_ours} сообщений без ответа HR, пропуск")
+                    self._add_log(state.short, state.color,
+                        f"🤖 [{employer_short}] ⚠️ in_a_row_limit: {_consecutive_ours} сообщения без ответа HR, пропуск", "warning", neg_id=neg_id)
+                    state.llm_replied_msgs.add(key)
+                    continue
                 log_debug(f"LLM [{state.short}] {neg_id}: история {len(conversation)} сообщений, резюме {len(resume_text)} симв., отправляю в LLM")
                 self._add_log(state.short, state.color,
                     f"🤖 {progress} [{employer_short}]: история {len(conversation)} сообщ., жду LLM…", "info", neg_id=neg_id)
@@ -3417,7 +4205,9 @@ class BotManager:
                         continue
                     if ok:
                         state.llm_replied_msgs.add(key)
+                        state._msg_consecutive[neg_id] = state._msg_consecutive.get(neg_id, 0) + 1
                         replied += 1
+                        # Don't mark_read — let unread stay so we catch follow-up HR messages
                         upsert_interview(neg_id, acc=state.short, acc_color=state.color,
                                          llm_reply=reply_text, llm_sent=True)
                         self._add_log(state.short, state.color,
@@ -3474,6 +4264,14 @@ class BotManager:
 
     def _fetch_hh_stats_worker(self, idx: int, state: AccountState) -> None:
         """Thread worker for HH stats polling"""
+        try:
+            self._fetch_hh_stats_worker_inner(idx, state)
+        except Exception as e:
+            log_debug(f"STATS WORKER CRASHED [{state.short}]: {e}")
+            import traceback
+            log_debug(traceback.format_exc())
+
+    def _fetch_hh_stats_worker_inner(self, idx: int, state: AccountState) -> None:
         HH_STATS_INTERVAL = 900  # 15 minutes
 
         while not self._stop_event.is_set():
@@ -3487,6 +4285,10 @@ class BotManager:
                         state.short, state.color,
                         "⚠️ Куки протухли! (HH stats) Обновите куки.", "error",
                     )
+                    state.hh_stats_loading = False
+                    # Don't overwrite real stats with zeroes on auth failure
+                    self._stop_event.wait(HH_STATS_INTERVAL)
+                    continue
                 old_interviews = state.hh_interviews
                 state.hh_interviews = stats["interview"]
                 state.hh_interviews_recent = stats["recent_interview"]
@@ -3495,6 +4297,7 @@ class BotManager:
                 state.hh_discards = stats["discard"]
                 state.hh_interviews_list = stats["interviews_list"]
                 state.hh_interview_neg_ids = stats.get("neg_ids", [])
+                state.hh_unread_by_employer = stats.get("unread_by_employer", 0)
 
                 # Persist interviews to DB (neg_id → employer from interviews_list text)
                 for neg_id in state.hh_interview_neg_ids:
@@ -3601,15 +4404,35 @@ async def websocket_endpoint(ws: WebSocket):
             if cmd == "pause_toggle":
                 bot.toggle_pause()
             elif cmd == "account_pause":
-                idx = int(data.get("idx", -1))
+                try:
+                    idx = int(data.get("idx", -1))
+                except (ValueError, TypeError):
+                    continue
                 bot.toggle_account_pause(idx)
             elif cmd == "account_llm":
-                idx = int(data.get("idx", -1))
+                try:
+                    idx = int(data.get("idx", -1))
+                except (ValueError, TypeError):
+                    continue
                 bot.toggle_account_llm(idx)
+            elif cmd == "account_oauth":
+                try:
+                    idx = int(data.get("idx", -1))
+                except (ValueError, TypeError):
+                    continue
+                bot.toggle_account_oauth(idx)
             elif cmd == "set_config":
                 key = data.get("key")
                 value = data.get("value")
-                if key and key in _CONFIG_KEYS:
+                if key == "allowed_schedules" and isinstance(value, list):
+                    CONFIG.allowed_schedules = [s for s in value if isinstance(s, str)]
+                    save_config()
+                    bot._add_log("", "", f"⚙️ Формат работы: {CONFIG.allowed_schedules or 'все'}", "info")
+                elif key == "auto_apply_tests":
+                    CONFIG.auto_apply_tests = bool(value)
+                    save_config()
+                    bot._add_log("", "", f"⚙️ Авто-тесты: {'ВКЛ' if CONFIG.auto_apply_tests else 'ВЫКЛ'}", "info")
+                elif key and key in _CONFIG_KEYS:
                     old_val = getattr(CONFIG, key)
                     try:
                         setattr(CONFIG, key, type(old_val)(value))
@@ -3981,7 +4804,12 @@ async def api_set_urls(idx: int, request: Request):
     body = await request.json()
     urls = [u.strip() for u in body.get("urls", []) if u.strip()]
     # url_pages: {url: pages} — индивидуальная глубина, 0/None = использовать глобальное
-    url_pages = {k: int(v) for k, v in body.get("url_pages", {}).items() if v}
+    url_pages = {}
+    for k, v in body.get("url_pages", {}).items():
+        try:
+            url_pages[k] = int(v) if v else 0
+        except (ValueError, TypeError):
+            pass
     if 0 <= idx < len(bot.account_states):
         bot.account_states[idx].acc["urls"] = urls
         bot.account_states[idx].acc["url_pages"] = url_pages
@@ -4102,7 +4930,7 @@ async def api_account_add(request: Request):
     auth_cookies = {k: v for k, v in cookies.items() if k in _AUTH_COOKIE_KEYS}
     acc = {
         "name": name,
-        "short": short or name.split()[0],
+        "short": short or (name.split()[0] if name.split() else name),
         "color": color,
         "resume_hash": resume_hash,
         "letter": letter,
@@ -4133,9 +4961,11 @@ async def api_account_delete(idx: int):
         bot.account_states[idx]._deleted = True
 
     name = accounts_data[idx].get("name", f"#{idx}")
-    accounts_data.pop(idx)
+
+    # Pop both lists atomically, account_states first to keep indices in sync
     if 0 <= idx < len(bot.account_states):
         bot.account_states.pop(idx)
+    accounts_data.pop(idx)
 
     save_accounts()
     bot._add_log("", "", f"🗑️ Аккаунт удалён: {name}", "info")
@@ -4306,6 +5136,793 @@ async def api_resume_views(idx: int):
     return {"error": "Invalid idx"}
 
 
+def _analyze_resume(acc: dict, extra_terms: list = None) -> dict:
+    """Аудит резюме — что видит HR, что не заполнено, рекомендации."""
+    resume_hash = acc.get("resume_hash", "")
+    if not resume_hash:
+        return {"error": "Нет resume_hash"}
+    cookies = acc.get("cookies", {})
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    try:
+        # 1. Fetch resume page SSR
+        r = requests.get(
+            f"https://hh.ru/resume/{resume_hash}",
+            headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
+            cookies=cookies, verify=False, timeout=15,
+        )
+        if r.status_code != 200 or _is_login_page(r.text):
+            return {"error": "auth_error"}
+        ssr = parse_hh_lux_ssr(r.text)
+        resume = None
+        for key in ("applicantResume", "resume", "resumeView"):
+            val = ssr.get(key)
+            if isinstance(val, dict) and val and not val.get("forbidden"):
+                resume = val
+                break
+        if not resume:
+            return {"error": "Не удалось получить данные резюме"}
+
+        attrs = resume.get("_attributes", {})
+        field_statuses = resume.get("fieldStatuses", {})
+
+        # Helper
+        def _str(val):
+            if isinstance(val, list) and val:
+                v = val[0]
+                if isinstance(v, dict):
+                    return v.get("string", v.get("text", v.get("name", str(v))))
+                return str(v)
+            return ""
+
+        # 2. Fetch stats from resumes page
+        r2 = requests.get(
+            "https://hh.ru/applicant/resumes",
+            headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
+            cookies=cookies, verify=False, timeout=15,
+        )
+        stats_data = {}
+        if r2.status_code == 200:
+            ssr2 = parse_hh_lux_ssr(r2.text)
+            all_stats = ssr2.get("applicantResumesStatistics", {}).get("resumes", {})
+            rid = str(attrs.get("id", ""))
+            stats_data = all_stats.get(rid, {}).get("statistics", {})
+
+        # 3. Build analysis
+        job_status_raw = resume.get("jobSearchStatus", [])
+        job_status = ""
+        if job_status_raw and isinstance(job_status_raw, list):
+            job_status = (job_status_raw[0].get("jobSearchStatus", {}).get("name", "") if isinstance(job_status_raw[0], dict) else "")
+
+        title = _str(resume.get("title"))
+        roles = [r.get("text", "") for r in resume.get("professionalRole", []) if isinstance(r, dict)]
+        skills = [s.get("string", "") or s.get("name", "") for s in resume.get("keySkills", []) if isinstance(s, dict)]
+        salary = resume.get("salary", [])
+        salary_str = ""
+        if salary and isinstance(salary[0], dict):
+            amt = salary[0].get("amount") or salary[0].get("string")
+            salary_str = str(amt) if amt else ""
+
+        work_schedule = [_str([s]) for s in resume.get("workSchedule", [])]
+        work_formats = [_str([s]) for s in resume.get("workFormats", [])]
+        employment = [_str([s]) for s in resume.get("employment", [])]
+
+        # Green fields = fields that could improve but not filled
+        green = field_statuses.get("greenFields", [])
+        red = field_statuses.get("redFields", [])
+
+        # Recommendations
+        issues = []
+        if job_status == "not_looking_for_job":
+            issues.append({"level": "critical", "text": "Статус «Не ищу работу» — HR пропускают такие резюме", "fix": "Поменять на «Активно ищу» или «Рассматриваю предложения»"})
+        elif job_status == "looking_for_offers":
+            issues.append({"level": "info", "text": "Статус «Рассматриваю предложения» — OK, но «Активно ищу» даёт больше показов"})
+
+        percent = attrs.get("percent", 0)
+        if percent and percent < 80:
+            issues.append({"level": "high", "text": f"Заполненность {percent}% — HR видят это, нужно 80%+", "fix": "Заполнить пустые поля"})
+
+        status = attrs.get("status", "")
+        if status != "published":
+            issues.append({"level": "critical", "text": f"Статус резюме: {status} (не опубликовано)", "fix": "Опубликовать резюме на hh.ru"})
+
+        if not attrs.get("canPublishOrUpdate"):
+            issues.append({"level": "high", "text": "Резюме нельзя обновить/опубликовать", "fix": "Проверить ограничения в настройках hh.ru"})
+
+        if "photo" in green:
+            issues.append({"level": "high", "text": "Нет фото — HR часто фильтруют «только с фото»", "fix": "Добавить деловое фото"})
+
+        if "salary" in green or not salary_str:
+            issues.append({"level": "medium", "text": "Не указана зарплата — HR не может фильтровать по ожиданиям", "fix": "Указать желаемую зарплату"})
+
+        if "skills" in green:
+            issues.append({"level": "medium", "text": "Не заполнено «О себе» — теряете очки в поиске", "fix": "Написать 3-5 предложений о себе"})
+
+        if "email" in green:
+            issues.append({"level": "low", "text": "Не указан email", "fix": "Добавить email для связи"})
+
+        if "recommendation" in green:
+            issues.append({"level": "low", "text": "Нет рекомендаций", "fix": "Попросить коллегу/руководителя оставить рекомендацию"})
+
+        if "certificate" in green:
+            issues.append({"level": "low", "text": "Нет сертификатов", "fix": "Добавить профильные сертификаты (курсы, экзамены)"})
+
+        search_shows = (stats_data.get("searchShows") or {}).get("count", 0)
+        views = (stats_data.get("views") or {}).get("count", 0)
+        views_new = (stats_data.get("views") or {}).get("countNew", 0)
+        invitations = (stats_data.get("invitations") or {}).get("count", 0)
+        inv_new = (stats_data.get("invitations") or {}).get("countNew", 0)
+
+        if search_shows < 5:
+            issues.append({"level": "high", "text": f"Только {search_shows} показов в поиске за 7 дней — резюме плохо ранжируется", "fix": "Обновить резюме, поменять статус на «Активно ищу», поднять резюме"})
+
+        _SCHEDULE_MAP = {"full_day": "Полный день", "remote": "Удалённая", "flexible": "Гибкий", "shift": "Сменный", "flyInFlyOut": "Вахта"}
+        _FORMAT_MAP = {"ON_SITE": "Офис", "REMOTE": "Удалёнка", "HYBRID": "Гибрид", "FIELD_WORK": "Разъезды"}
+        _EMPLOY_MAP = {"full": "Полная", "part": "Частичная", "project": "Проектная", "volunteer": "Волонтёрство", "probation": "Стажировка"}
+        _STATUS_MAP = {
+            "not_looking_for_job": "Не ищу работу",
+            "looking_for_offers": "Рассматриваю предложения",
+            "actively_searching": "Активно ищу работу",
+            "has_job_offer": "Есть оффер",
+            "accepted_job_offer": "Принял оффер",
+        }
+
+        # 4. Market analysis — competitor data and vacancy supply/demand
+        market = {}
+        try:
+            # Use first role or first part of title for search
+            search_term = (roles[0] if roles else title.split(",")[0].strip()) if title else ""
+            encoded_title = urllib.parse.quote(search_term)
+            # Fetch resume clusters (competitor counts)
+            r_clusters = requests.get(
+                f"https://hh.ru/shards/search/resume/clusters?text={encoded_title}&area=1",
+                headers={"User-Agent": ua, "Accept": "application/json"},
+                cookies=cookies, verify=False, timeout=10,
+            )
+            clusters_data = {}
+            active_seekers = 0
+            experience_dist = []
+            top_competitor_skills = []
+            if r_clusters.status_code == 200:
+                try:
+                    cj = r_clusters.json()
+                    clusters = cj.get("clusters", {})
+                    # clusters is a dict: {"experience": {"groups": {"noExperience": {"count": N, "title": "..."}, ...}}, ...}
+                    exp_groups = clusters.get("experience", {}).get("groups", {})
+                    for gid, gdata in exp_groups.items():
+                        experience_dist.append({
+                            "id": gid,
+                            "name": gdata.get("title", gid),
+                            "count": gdata.get("count", 0),
+                        })
+                    # Active seekers from job_search_status cluster
+                    js_groups = clusters.get("job_search_status", {}).get("groups", {})
+                    for gid, gdata in js_groups.items():
+                        if "актив" in (gdata.get("title", "")).lower() or gid == "active_search":
+                            active_seekers = gdata.get("count", 0)
+                            break
+                    # Top skills
+                    skill_groups = clusters.get("skill", {}).get("groups", {})
+                    sorted_skills = sorted(skill_groups.items(), key=lambda x: x[1].get("count", 0), reverse=True)
+                    for gid, gdata in sorted_skills[:20]:
+                        top_competitor_skills.append({
+                            "name": gdata.get("title", gid),
+                            "count": gdata.get("count", 0),
+                        })
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+            # Fetch vacancy count for this title
+            vacancy_count = 0
+            try:
+                r_vac = requests.get(
+                    f"https://hh.ru/search/vacancy?text={encoded_title}&area=1",
+                    headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
+                    cookies=cookies, verify=False, timeout=10,
+                )
+                if r_vac.status_code == 200:
+                    vac_ssr = parse_hh_lux_ssr(r_vac.text)
+                    # Try multiple SSR keys
+                    sc = vac_ssr.get("searchCounts", {})
+                    if isinstance(sc, dict) and sc.get("value"):
+                        vacancy_count = int(sc["value"])
+                    if not vacancy_count:
+                        for ssr_key in ("totalVacancies", "vacancyCount"):
+                            v = vac_ssr.get(ssr_key)
+                            if v:
+                                vacancy_count = int(v)
+                                break
+                    if not vacancy_count:
+                        vsr = vac_ssr.get("vacancySearchResult", {})
+                        vacancy_count = int(vsr.get("found", 0) or vsr.get("total", 0) or 0)
+                    if not vacancy_count:
+                        # Fallback: parse from HTML
+                        for pattern in [
+                            r'data-qa="vacancies-total-found"[^>]*>\s*([\d\s\xa0]+)',
+                            r'"found"\s*:\s*(\d+)',
+                            r'Найден\w*\s+([\d\s\xa0]+)\s+ваканс',
+                        ]:
+                            m_found = re.search(pattern, r_vac.text)
+                            if m_found:
+                                vacancy_count = int(m_found.group(1).replace(" ", "").replace("\xa0", ""))
+                                break
+            except Exception:
+                pass
+
+            supply_demand = round(active_seekers / vacancy_count, 2) if vacancy_count > 0 else 0
+
+            market = {
+                "search_term": search_term,
+                "vacancy_count": vacancy_count,
+                "active_seekers": active_seekers,
+                "supply_demand_ratio": supply_demand,
+                "experience_distribution": experience_dist,
+                "top_competitor_skills": top_competitor_skills,
+            }
+        except Exception as e:
+            log_debug(f"_analyze_resume market analysis error: {e}")
+
+        # 5. Field weight analysis — exact recipe for 100%
+        weight_analysis = []
+        _FIELD_LABELS = {
+            "experience": "Опыт работы", "keySkills": "Ключевые навыки", "advancedKeySkills": "Навыки (расширенные)",
+            "primaryEducation": "Образование", "title": "Должность", "professionalRole": "Проф. роль",
+            "area": "Город", "phone": "Телефон", "language": "Языки", "firstName": "Имя", "lastName": "Фамилия",
+            "photo": "Фото", "salary": "Зарплата", "email": "Email", "recommendation": "Рекомендации",
+            "personalSite": "Сайт/портфолио", "additionalEducation": "Курсы", "attestationEducation": "Экзамены",
+            "middleName": "Отчество", "portfolio": "Портфолио", "metro": "Метро", "skills": "О себе",
+            "certificate": "Сертификаты", "driverLicenseTypes": "Водительские права", "hasVehicle": "Автомобиль",
+        }
+        conds = resume.get("_conditions", {})
+        total_weight = 0
+        filled_weight = 0
+        for field, info in conds.items():
+            if not isinstance(info, dict):
+                continue
+            w = info.get("weight", 0)
+            st = info.get("status", "")
+            if w > 0:
+                total_weight += w
+                is_filled = st not in ("green", "inactive", "")  # green = optional unfilled, ok = filled
+                if is_filled:
+                    filled_weight += w
+                weight_analysis.append({
+                    "field": field,
+                    "label": _FIELD_LABELS.get(field, field),
+                    "weight": w,
+                    "filled": is_filled,
+                    "status": st,
+                })
+        # Sort: unfilled high-weight first
+        weight_analysis.sort(key=lambda x: (-1 if not x["filled"] else 1, -x["weight"]))
+
+        # 6. Supply/demand across multiple search terms
+        supply_demand_comparison = []
+        try:
+            terms = set()
+            # Title parts
+            if title:
+                for part in title.split(","):
+                    t = part.strip()
+                    if t and len(t) > 3:
+                        terms.add(t)
+            # Roles
+            for r in roles:
+                if r:
+                    terms.add(r)
+            # Common QA variants
+            if any("тестир" in t.lower() or "qa" in t.lower() for t in terms):
+                terms.update(["автоматизация тестирования", "QA engineer"])
+            # User-provided extra terms
+            if extra_terms:
+                terms.update(extra_terms)
+
+            for term in list(terms)[:10]:
+                try:
+                    enc = urllib.parse.quote(term)
+                    r_vc = requests.get(
+                        f"https://hh.ru/search/vacancy?text={enc}&area=1",
+                        headers={"User-Agent": ua, "Accept": "text/html"},
+                        cookies=cookies, verify=False, timeout=10,
+                    )
+                    vc = 0
+                    if r_vc.status_code == 200:
+                        vc_ssr = parse_hh_lux_ssr(r_vc.text)
+                        sc = vc_ssr.get("searchCounts", {})
+                        if isinstance(sc, dict) and sc.get("value"):
+                            vc = int(sc["value"])
+                        if not vc:
+                            m_f = re.search(r'"found"\s*:\s*(\d+)', r_vc.text[:5000])
+                            if m_f:
+                                vc = int(m_f.group(1))
+                    supply_demand_comparison.append({
+                        "term": term,
+                        "vacancies": vc,
+                        "ratio": round(active_seekers / vc, 1) if vc > 0 else 0,
+                    })
+                except Exception:
+                    pass
+            supply_demand_comparison.sort(key=lambda x: x.get("ratio") or 9999)
+        except Exception as e:
+            log_debug(f"_analyze_resume supply/demand comparison error: {e}")
+
+        # 7. HR activity analysis — applicantEmployerManagersActivity from negotiations SSR
+        hr_activity = {"active_count": 0, "slow_count": 0, "dead_count": 0}
+        try:
+            r_neg = requests.get(
+                "https://hh.ru/applicant/negotiations",
+                headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
+                cookies=cookies, verify=False, timeout=15,
+            )
+            if r_neg.status_code == 200 and not _is_login_page(r_neg.text):
+                neg_ssr = parse_hh_lux_ssr(r_neg.text)
+                managers = neg_ssr.get("applicantEmployerManagersActivity", [])
+                if isinstance(managers, list):
+                    for mgr in managers:
+                        if not isinstance(mgr, dict):
+                            continue
+                        inactive_min = mgr.get("@inactiveMinutes", mgr.get("inactiveMinutes", 0))
+                        if not isinstance(inactive_min, (int, float)):
+                            try:
+                                inactive_min = int(inactive_min)
+                            except (ValueError, TypeError):
+                                inactive_min = 0
+                        inactive_days = inactive_min / 1440.0
+                        if inactive_days < 3:
+                            hr_activity["active_count"] += 1
+                        elif inactive_days <= 7:
+                            hr_activity["slow_count"] += 1
+                        else:
+                            hr_activity["dead_count"] += 1
+        except Exception as e:
+            log_debug(f"_analyze_resume hr_activity error: {e}")
+
+        return {
+            "ok": True,
+            "name": f"{_str(resume.get('firstName'))} {_str(resume.get('lastName'))}".strip(),
+            "title": title,
+            "roles": roles,
+            "skills": skills[:25],
+            "total_experience_months": int(_str(resume.get("totalExperience")) or 0),
+            "education_level": _str(resume.get("educationLevel")),
+            "percent": percent,
+            "status": status,
+            "job_search_status": job_status,
+            "job_search_status_label": _STATUS_MAP.get(job_status, job_status),
+            "salary": salary_str,
+            "work_schedule": [_SCHEDULE_MAP.get(s, s) for s in work_schedule],
+            "work_formats": [_FORMAT_MAP.get(s, s) for s in work_formats],
+            "employment": [_EMPLOY_MAP.get(s, s) for s in employment],
+            "has_photo": "photo" not in green,
+            "area": _str(resume.get("area")),
+            "stats_7d": {
+                "search_shows": search_shows,
+                "views": views,
+                "views_new": views_new,
+                "invitations": invitations,
+                "invitations_new": inv_new,
+            },
+            "issues": issues,
+            "green_fields": green,
+            "market": market,
+            "weight_analysis": weight_analysis,
+            "filled_weight": filled_weight,
+            "total_weight": total_weight,
+            "supply_demand_comparison": supply_demand_comparison,
+            "hr_activity": hr_activity,
+        }
+    except Exception as e:
+        log_debug(f"_analyze_resume error: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/account/{idx}/oauth_token")
+async def api_oauth_token(idx: int):
+    """Get/refresh OAuth token for account."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"ok": False, "error": "Invalid idx"}
+    loop = asyncio.get_event_loop()
+    token = await loop.run_in_executor(None, _obtain_oauth_token, acc)
+    if token:
+        rh = acc.get("resume_hash", "")
+        with _oauth_lock:
+            info = _oauth_tokens.get(rh, {})
+        return {
+            "ok": True,
+            "token_prefix": token[:20] + "...",
+            "expires_in": int(info.get("expires_at", 0) - time.time()),
+            "has_refresh": bool(info.get("refresh_token")),
+        }
+    return {"ok": False, "error": "Failed to obtain token"}
+
+
+@app.get("/api/account/{idx}/oauth_status")
+async def api_oauth_status(idx: int):
+    """Check OAuth token status."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"error": "Invalid idx"}
+    rh = acc.get("resume_hash", "")
+    with _oauth_lock:
+        info = _oauth_tokens.get(rh, {})
+    if info:
+        remaining = int(info.get("expires_at", 0) - time.time())
+        return {
+            "has_token": True,
+            "token_prefix": info.get("access_token", "")[:20] + "...",
+            "expires_in_hours": round(remaining / 3600, 1),
+            "has_refresh": bool(info.get("refresh_token")),
+        }
+    return {"has_token": False}
+
+
+@app.post("/api/account/{idx}/oauth_touch")
+async def api_oauth_touch(idx: int):
+    """Touch/publish resume via OAuth API (no captcha)."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"ok": False, "error": "Invalid idx"}
+    loop = asyncio.get_event_loop()
+    ok, msg = await loop.run_in_executor(None, _oauth_touch_resume, acc)
+    return {"ok": ok, "message": msg}
+
+
+@app.get("/api/account/{idx}/resume_audit")
+@app.get("/api/account/{idx}/test_llm_questionnaire")
+async def api_test_llm_questionnaire(idx: int, vacancy_id: str = ""):
+    """Test LLM questionnaire answering without submitting."""
+    if not vacancy_id:
+        return {"error": "vacancy_id required"}
+    acc = bot._get_apply_acc(idx)
+    if not acc:
+        return {"error": "Invalid idx"}
+    def _do():
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        r = requests.get(
+            f"https://hh.ru/applicant/vacancy_response?vacancyId={vacancy_id}&withoutTest=no",
+            headers={"User-Agent": ua, "Accept": "text/html"},
+            cookies=acc.get("cookies", {}), verify=False, timeout=15)
+        rich = _parse_questionnaire_rich(r.text)
+        resume_text = fetch_resume_text(acc) if CONFIG.llm_use_resume else ""
+        answers = generate_llm_questionnaire_answers(rich, f"Vacancy {vacancy_id}", "", resume_text)
+        result = []
+        for q in rich:
+            llm_ans = answers.get(q["field"], "")
+            result.append({
+                "field": q["field"], "type": q["type"], "text": q["text"],
+                "options": q.get("options", []),
+                "llm_answer": llm_ans,
+                "template_answer": get_questionnaire_answer(q["text"]),
+            })
+        return {"questions": result, "llm_answered": len(answers), "total": len(rich),
+                "llm_enabled": CONFIG.llm_enabled, "profiles": len(CONFIG.llm_profiles or [])}
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _do)
+
+
+@app.get("/api/account/{idx}/resume_audit")
+async def api_resume_audit(idx: int, extra_terms: str = ""):
+    """Аудит резюме — анализ видимости для HR."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"error": "Invalid idx"}
+    extra = [t.strip() for t in (extra_terms or "").split(",") if t.strip()] if extra_terms else []
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _analyze_resume, acc, extra)
+
+
+@app.get("/api/account/{idx}/hot_leads")
+async def api_hot_leads(idx: int):
+    """Possible job offers — горячие лиды, работодатели готовые пригласить."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"error": "Invalid idx"}
+    try:
+        r = requests.get(
+            "https://hh.ru/shards/applicant/negotiations/possible_job_offers",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "X-Xsrftoken": acc.get("cookies", {}).get("_xsrf", ""),
+                "Referer": "https://hh.ru/applicant/negotiations",
+            },
+            cookies=acc.get("cookies", {}), verify=False, timeout=15,
+        )
+        if r.status_code != 200:
+            return {"offers": [], "error": f"HTTP {r.status_code}"}
+        d = r.json()
+        offers = []
+        for o in d.get("possibleJobOffers", []):
+            offers.append({
+                "employer": o.get("name", "?"),
+                "employer_id": o.get("employerId"),
+                "vacancies": o.get("vacancyNames", []),
+                "vacancy_id": o.get("vacancyId", ""),
+                "has_invitation": o.get("hasInvitationTopic", False),
+                "topic_ids": o.get("topicIds", []),
+            })
+        return {"offers": offers, "total": len(offers)}
+    except Exception as e:
+        return {"offers": [], "error": str(e)}
+
+
+@app.get("/api/hr_contacts")
+async def api_hr_contacts():
+    """Return collected HR contact info from vacancy pre-checks."""
+    return {"contacts": list(bot.hr_contacts), "total": len(bot.hr_contacts)}
+
+
+@app.get("/api/account/{idx}/remindable")
+async def api_remindable(idx: int):
+    """Return negotiations where responseReminderState.allowed is True (can send reminder)."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"error": "Invalid idx"}
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    try:
+        r = requests.get(
+            "https://hh.ru/applicant/negotiations",
+            headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
+            cookies=acc.get("cookies", {}), verify=False, timeout=15,
+        )
+        if r.status_code != 200 or _is_login_page(r.text):
+            return {"error": "auth_error", "remindable": []}
+        ssr = parse_hh_lux_ssr(r.text)
+        topic_list = ssr.get("topicList", [])
+        remindable = []
+        for topic in (topic_list if isinstance(topic_list, list) else []):
+            if not isinstance(topic, dict):
+                continue
+            rrs = topic.get("responseReminderState", {})
+            if isinstance(rrs, dict) and rrs.get("allowed"):
+                # Extract employer / vacancy info
+                employer = ""
+                vacancy = ""
+                chat_id = topic.get("chatId", "")
+                topic_id = topic.get("topicId", "")
+                # Try to get display info
+                v_info = topic.get("vacancy", {})
+                if isinstance(v_info, dict):
+                    vacancy = v_info.get("name", "")
+                    emp = v_info.get("company", v_info.get("employer", {}))
+                    if isinstance(emp, dict):
+                        employer = emp.get("name", "")
+                    elif isinstance(emp, str):
+                        employer = emp
+                remindable.append({
+                    "chat_id": str(chat_id),
+                    "topic_id": str(topic_id),
+                    "employer": employer,
+                    "vacancy": vacancy,
+                })
+        return {"remindable": remindable, "total": len(remindable)}
+    except Exception as e:
+        return {"error": str(e), "remindable": []}
+
+
+@app.post("/api/account/{idx}/clone_resume")
+async def api_clone_resume(idx: int, request: Request):
+    """Clone resume and optionally set title. Body: {title?: "new title"}"""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"ok": False, "error": "Invalid idx"}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    new_title = body.get("title", "")
+    resume_hash = acc.get("resume_hash", "")
+    if not resume_hash:
+        return {"ok": False, "error": "No resume_hash"}
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    try:
+        r = requests.post(
+            "https://hh.ru/applicant/resumes/clone",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "X-Xsrftoken": xsrf,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://hh.ru",
+                "Referer": "https://hh.ru/applicant/resumes",
+            },
+            cookies=acc.get("cookies", {}),
+            data=f"resume={resume_hash}&_xsrf={xsrf}",
+            verify=False, timeout=15,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            new_url = d.get("url", "")
+            # Extract new hash from URL like /profile/resume/?resume=HASH
+            new_hash = ""
+            m = re.search(r'resume=([a-f0-9]+)', new_url)
+            if m:
+                new_hash = m.group(1)
+            if not new_hash:
+                return {"ok": True, "new_hash": "", "message": "Склонировано, но hash не получен"}
+
+            # Read original resume to copy all fields
+            ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            r_orig = requests.get(f"https://hh.ru/resume/{resume_hash}",
+                headers={"User-Agent": ua, "Accept": "text/html"},
+                cookies=acc.get("cookies", {}), verify=False, timeout=15)
+            orig_data = {}
+            m_ssr = re.search(r'<template[^>]*id="HH-Lux-InitialState"[^>]*>([\s\S]*?)</template>', r_orig.text)
+            if m_ssr:
+                orig_data = json.loads(m_ssr.group(1)).get("applicantResume", {})
+
+            # Build fields to copy
+            fields = {}
+            if new_title:
+                fields["title"] = [{"string": new_title}]
+            for copy_field in ("experience", "primaryEducation", "skills", "employment",
+                               "workSchedule", "workFormats", "businessTripReadiness",
+                               "relocation", "travelTime"):
+                val = orig_data.get(copy_field, [])
+                if val:
+                    fields[copy_field] = val
+            # Add salary + remote if not in original
+            if not orig_data.get("salary"):
+                fields["salary"] = [{"amount": 100000, "currency": "RUR"}]
+            if not any(s.get("string") == "remote" for s in orig_data.get("workSchedule", [])):
+                ws = list(orig_data.get("workSchedule", []))
+                ws.append({"string": "remote"})
+                fields["workSchedule"] = ws
+            if not any(s.get("string") == "REMOTE" for s in orig_data.get("workFormats", [])):
+                wf = list(orig_data.get("workFormats", []))
+                wf.append({"string": "REMOTE"})
+                fields["workFormats"] = wf
+
+            # Apply all fields to clone
+            edited_count = 0
+            for field_name, field_data in fields.items():
+                res = _edit_resume_field(acc, new_hash, {field_name: field_data})
+                if res.get("ok"):
+                    edited_count += 1
+
+            return {
+                "ok": True,
+                "new_hash": new_hash,
+                "edit_url": f"https://hh.ru/resume/edit/{new_hash}/position",
+                "fields_copied": edited_count,
+                "message": f"Полный клон создан! {edited_count} полей скопировано. Осталось опубликовать на hh.ru",
+            }
+        else:
+            return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _edit_resume_field(acc: dict, resume_hash: str, fields: dict) -> dict:
+    """Edit resume fields via POST /applicant/resume/edit. Returns {ok, error}."""
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    xsrf = acc.get("cookies", {}).get("_xsrf", "")
+    try:
+        # Warm up session (DDoS Guard needs a GET first)
+        s = requests.Session()
+        s.verify = False
+        try:
+            s.get("https://hh.ru/applicant/resumes", headers={"User-Agent": ua, "Accept": "text/html"},
+                  cookies=acc.get("cookies", {}), timeout=10)
+            # POST edit
+            r = s.post(
+            f"https://hh.ru/applicant/resume/edit?resume={resume_hash}&hhtmSource=resume_partial_edit",
+            headers={
+                "User-Agent": ua,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Xsrftoken": xsrf,
+                "Origin": "https://hh.ru",
+                "Referer": f"https://hh.ru/resume/edit/{resume_hash}/position",
+            },
+            cookies=acc.get("cookies", {}),
+            json=fields,
+            timeout=15,
+        )
+            if r.status_code in (200, 204):
+                return {"ok": True}
+            return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+        finally:
+            s.close()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/account/{idx}/edit_resume")
+async def api_edit_resume(idx: int, request: Request):
+    """Edit resume fields via API. Body: {resume_hash, title, salary, skills, professionalRole}"""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"ok": False, "error": "Invalid idx"}
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False, "error": "bad json"}
+
+    resume_hash = body.get("resume_hash") or acc.get("resume_hash", "")
+    if not resume_hash:
+        return {"ok": False, "error": "No resume_hash"}
+
+    # Build fields dict in HH format
+    fields = {}
+    if "title" in body and body["title"]:
+        fields["title"] = [{"string": body["title"]}]
+    if "salary" in body:
+        try:
+            sal = int(body["salary"])
+            if sal > 0:
+                fields["salary"] = [{"amount": sal, "currency": body.get("currency", "RUR")}]
+            else:
+                fields["salary"] = []
+        except (ValueError, TypeError):
+            pass
+    if "skills" in body and body["skills"]:
+        fields["skills"] = [{"string": body["skills"]}]
+    if "professionalRole" in body:
+        try:
+            fields["professionalRole"] = [{"string": int(body["professionalRole"])}]
+        except (ValueError, TypeError):
+            pass
+
+    if not fields:
+        return {"ok": False, "error": "No fields to update"}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _edit_resume_field, acc, resume_hash, fields)
+    return result
+
+
+@app.get("/api/account/{idx}/all_resumes")
+async def api_all_resumes(idx: int):
+    """List all resumes for this account (including clones). Uses HTML page for full data."""
+    acc = bot._get_apply_acc(idx)
+    if acc is None:
+        return {"error": "Invalid idx"}
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    try:
+        # Use HTML page — shards API returns truncated data for clones
+        r = requests.get(
+            "https://hh.ru/applicant/resumes",
+            headers={"User-Agent": ua, "Accept": "text/html", "Referer": "https://hh.ru/"},
+            cookies=acc.get("cookies", {}), verify=False, timeout=15,
+        )
+        if r.status_code != 200:
+            return {"resumes": [], "error": f"HTTP {r.status_code}"}
+        ssr = parse_hh_lux_ssr(r.text)
+        ssr_resumes = ssr.get("applicantResumes", [])
+        stats = ssr.get("applicantResumesStatistics", {}).get("resumes", {})
+
+        resumes = []
+        for res in ssr_resumes:
+            attrs = res.get("_attributes", {})
+            rid = str(attrs.get("id", ""))
+            rhash = attrs.get("hash", "")
+            title_list = res.get("title", [])
+            title = title_list[0].get("string", "") if title_list and isinstance(title_list[0], dict) else ""
+            # Get percent from full page if shards returns 0
+            percent = attrs.get("percent", 0)
+            # Stats
+            rs = stats.get(rid, {}).get("statistics", {})
+            resumes.append({
+                "hash": rhash,
+                "title": title or "(без заголовка)",
+                "status": attrs.get("status", ""),
+                "percent": percent,
+                "is_searchable": attrs.get("isSearchable", False),
+                "can_publish": attrs.get("canPublishOrUpdate", False),
+                "updated": attrs.get("updated"),
+                "skills_count": len(res.get("keySkills", [])),
+                "experience_count": len(res.get("experience", [])),
+                "views_7d": (rs.get("views") or {}).get("count", 0),
+                "shows_7d": (rs.get("searchShows") or {}).get("count", 0),
+                "edit_url": f"https://hh.ru/resume/edit/{rhash}/position",
+            })
+        return {"resumes": resumes, "total": len(resumes)}
+    except Exception as e:
+        return {"resumes": [], "error": str(e)}
+
+
 async def _fetch_questionnaire_data(acc: dict, vid: str) -> dict:
     """
     Получает форму опросника и возвращает список вопросов с полями.
@@ -4324,6 +5941,8 @@ async def _fetch_questionnaire_data(acc: dict, vid: str) -> dict:
     async with aiohttp.ClientSession(cookies=acc["cookies"], connector=connector, headers=headers) as session:
         async with session.get(url_form, timeout=aiohttp.ClientTimeout(total=15)) as r:
             html = await r.text()
+            if r.status in (401, 403) or _is_login_page(html):
+                return {"questions": [], "hidden": {}, "error": "auth"}
 
     hidden = dict(re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"', html))
     hidden.update(dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+type="hidden"[^>]+value="([^"]*)"', html)))
@@ -4381,6 +6000,9 @@ async def _fetch_questionnaire_data(acc: dict, vid: str) -> dict:
         for i, v in enumerate(vals):
             lbl = label_map.get(v, default_labels[i] if i < len(default_labels) else v)
             options.append({"value": v, "label": lbl})
+        if not vals:
+            q_idx += 1
+            continue
         tmpl = get_questionnaire_answer(q_text).lower()
         chosen = vals[0]
         if any(w in tmpl for w in ("нет", "no", "не готов", "не готова", "не могу")):
@@ -4388,6 +6010,28 @@ async def _fetch_questionnaire_data(acc: dict, vid: str) -> dict:
         questions.append({"field": name, "type": "radio", "text": q_text,
                           "options": options, "suggested": chosen})
         q_idx += 1
+
+    # Checkbox
+    checkbox_groups: dict = {}
+    checkbox_order: list = []
+    for inp in re.findall(r'<input[^>]+type="checkbox"[^>]+>', html, re.I):
+        nm = re.search(r'name="([^"]+)"', inp)
+        vl = re.search(r'value="([^"]+)"', inp)
+        if nm and vl and re.match(r'task_\d+', nm.group(1)):
+            n, v = nm.group(1), vl.group(1)
+            if n not in checkbox_groups:
+                checkbox_groups[n] = []
+                checkbox_order.append(n)
+            checkbox_groups[n].append(v)
+    for name in checkbox_order:
+        if name in radio_groups:
+            continue  # skip if already handled as radio
+        vals = checkbox_groups[name]
+        q_text = q_texts[q_idx] if q_idx < len(q_texts) else ""
+        q_idx += 1
+        options = [{"value": v, "label": v} for v in vals]
+        questions.append({"field": name, "type": "checkbox", "text": q_text,
+                          "options": options, "suggested": vals[0] if vals else ""})
 
     return {"questions": questions, "hidden": hidden, "url_form": url_form}
 
@@ -4550,7 +6194,7 @@ async def api_session_add(body: dict):
     idx_in_temp = len(bot.temp_sessions)
     temp_acc = {
         "name": f"{display_name} (🌐)",
-        "short": f"🌐{display_name.split()[0]}",
+        "short": f"🌐{display_name.split()[0] if display_name.split() else display_name}",
         "color": "yellow",
         "resume_hash": resume_hash,
         "all_resumes": all_resumes,
@@ -4659,7 +6303,10 @@ async def api_session_profile(idx: int, request: Request):
     temp_idx = idx - len(bot.account_states)
     if not (0 <= temp_idx < len(bot.temp_sessions)):
         return {"ok": False, "error": "Сессия не найдена"}
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False, "error": "bad json"}
     ts = bot.temp_sessions[temp_idx]
     for field in ("name", "short", "color", "resume_hash"):
         if field in body and isinstance(body[field], str) and body[field].strip():
@@ -4704,7 +6351,7 @@ async def api_apply_check(body: dict):
         async with aiohttp.ClientSession(
             cookies=acc["cookies"],
             connector=aiohttp.TCPConnector(ssl=ssl_ctx),
-            headers=get_headers(acc["cookies"]["_xsrf"])
+            headers=get_headers(acc.get("cookies", {}).get("_xsrf", ""))
         ) as session:
             data = aiohttp.FormData()
             for k, v in [("resume_hash", acc["resume_hash"]), ("vacancy_id", vid),
@@ -4716,6 +6363,10 @@ async def api_apply_check(body: dict):
             ) as r:
                 txt = await r.text()
                 status_code = r.status
+
+        # Auth check
+        if status_code in (401, 403) or (status_code == 200 and _is_login_page(txt)):
+            return {"status": "error", "vacancy_id": vid, "message": "⚠️ Куки протухли — обновите в настройках"}
 
         # Разбираем ответ
         if status_code == 200:
@@ -4785,6 +6436,8 @@ async def api_apply_submit(body: dict):
             # Свежая форма (нужны актуальные uidPk/guid/startTime/_xsrf)
             async with session.get(url_form, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 html = await r.text()
+                if r.status in (401, 403) or _is_login_page(html):
+                    return {"status": "error", "message": "⚠️ Куки протухли — обновите в настройках"}
 
             hidden = dict(re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"', html))
             hidden.update(dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+type="hidden"[^>]+value="([^"]*)"', html)))
@@ -4802,7 +6455,7 @@ async def api_apply_submit(body: dict):
 
             async with session.post(
                 url_form,
-                headers={"X-Xsrftoken": acc["cookies"]["_xsrf"], "Referer": url_form},
+                headers={"X-Xsrftoken": acc.get("cookies", {}).get("_xsrf", ""), "Referer": url_form},
                 data=form,
                 timeout=aiohttp.ClientTimeout(total=15),
                 allow_redirects=False,
@@ -4821,7 +6474,9 @@ async def api_apply_submit(body: dict):
                 state.sent += 1
                 state.questionnaire_sent += 1
             add_applied(acc["name"], vid)
-            bot._add_log(state.short, state.color, f"📝 Ручной отклик (опрос): {vid}", "success")
+            short = state.short if state else acc.get("name", "?")
+            color = state.color if state else ""
+            bot._add_log(short, color, f"📝 Ручной отклик (опрос): {vid}", "success")
             return {"status": "sent", "message": "Отклик успешно отправлен ✅"}
 
         return {"status": "error", "message": f"HTTP {status}"}
@@ -4874,7 +6529,10 @@ async def api_llm_toggle():
 @app.post("/api/llm_config")
 async def api_llm_config(request: Request):
     """Save LLM configuration."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False, "error": "bad json"}
     if "api_key" in body and str(body["api_key"]).strip():
         CONFIG.llm_api_key = str(body["api_key"]).strip()
     if "base_url" in body:
