@@ -306,31 +306,50 @@ def _load_cache():
                 _cache_interviews = {}
 
 
+_save_applied_lock = threading.Lock()
+
 def _save_applied_async():
     """Сохранить applied в фоне (atomic write)"""
-    with _cache_lock:
-        data = _cache_applied.copy() if _cache_applied else {}
-    tmp = APPLIED_FILE.with_suffix(".tmp")
+    if not _save_applied_lock.acquire(blocking=False):
+        return  # another save in progress
     try:
+        with _cache_lock:
+            data = _cache_applied.copy() if _cache_applied else {}
+        tmp = APPLIED_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
         tmp.replace(APPLIED_FILE)
     except Exception as e:
         log_debug(f"_save_applied_async error: {e}")
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+    finally:
+        _save_applied_lock.release()
 
+
+_save_tests_lock = threading.Lock()
 
 def _save_tests_async():
     """Сохранить tests в фоне (atomic write)"""
-    with _cache_lock:
-        data = _cache_tests.copy() if _cache_tests else {}
-    tmp = TEST_REQUIRED_FILE.with_suffix(".tmp")
+    if not _save_tests_lock.acquire(blocking=False):
+        return
     try:
+        with _cache_lock:
+            data = _cache_tests.copy() if _cache_tests else {}
+        tmp = TEST_REQUIRED_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
         tmp.replace(TEST_REQUIRED_FILE)
     except Exception as e:
         log_debug(f"_save_tests_async error: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+    finally:
+        _save_tests_lock.release()
         tmp.unlink(missing_ok=True)
 
 
@@ -355,7 +374,7 @@ def upsert_interview(neg_id: str, acc: str, acc_color: str = "",
                      employer: str = "", vacancy_title: str = "",
                      employer_last_msg: str = None, needs_reply: bool = None,
                      llm_reply: str = None, llm_sent: bool = None,
-                     chat_not_found: bool = None):
+                     chat_not_found: bool = None, chat_status: str = None):
     """Создать или обновить запись об интервью-переговоре."""
     _load_cache()
     now = datetime.now().isoformat(timespec="seconds")
@@ -388,6 +407,8 @@ def upsert_interview(neg_id: str, acc: str, acc_color: str = "",
                 record["llm_sent"] = llm_sent
         if chat_not_found is True:
             record["chat_not_found"] = True  # never reset — chat is permanently closed
+        if chat_status is not None:
+            record["chat_status"] = chat_status
         # Detect new employer message: if employer_last_msg changed vs what was already replied,
         # allow status to go back to pending_reply so the new message gets handled
         employer_msg_changed = (
@@ -426,7 +447,7 @@ def get_interviews_list(acc: str = "", limit: int = 2000, status: str = "") -> l
     if acc:
         items = [r for r in items if r.get("acc") == acc]
     if status:
-        items = [r for r in items if r.get("status") == status]
+        items = [r for r in items if r.get("status") == status or r.get("chat_status") == status]
     status_order = {"pending_reply": 0, "draft": 1, "replied": 2, "chat_closed": 3, "no_reply_needed": 4}
     # Сначала по дате desc, потом stable sort по статусу — pending всегда первые
     items.sort(key=lambda r: r.get("last_seen", "") or "", reverse=True)
@@ -497,7 +518,7 @@ _CONFIG_KEYS = [
     "pages_per_url", "max_concurrent", "response_delay", "pause_between_cycles",
     "limit_check_interval", "resume_touch_interval", "batch_responses", "min_salary",
     "auto_pause_errors", "questionnaire_default_answer", "llm_fill_questionnaire",
-    "skip_inconsistent", "use_oauth_apply", "daily_apply_limit", "stop_on_hh_limit",
+    "skip_inconsistent", "use_oauth_apply", "daily_apply_limit", "stop_on_hh_limit", "llm_check_interval",
     "filter_agencies", "filter_low_competition", "search_period_days",
 ]
 
@@ -789,6 +810,7 @@ class Config:
     filter_low_competition: bool = False  # Только вакансии с <10 откликами
     search_period_days: int = 0  # 0 = все, 1-30 = последние N дней
     llm_fill_questionnaire: bool = False  # Использовать LLM для заполнения опросников
+    llm_check_interval: int = 5  # Интервал проверки чатов LLM (в минутах, мин 2)
     llm_system_prompt: str = (
         "Ты помощник соискателя работы. Отвечай вежливо и кратко (2-4 предложения) "
         "на сообщения от HR и работодателей. Пиши от первого лица, женский род. "
@@ -1460,6 +1482,15 @@ async def send_response_async(acc: dict, vid: str) -> tuple:
                         "salary_from": glom(p, "responseStatus.shortVacancy.compensation.from", default=None),
                         "salary_to": glom(p, "responseStatus.shortVacancy.compensation.to", default=None),
                     }
+                    # Extract HR contact info
+                    ci = glom(p, "responseStatus.shortVacancy.contactInfo", default={})
+                    if ci and (ci.get("email") or ci.get("fio")):
+                        contact = {"fio": ci.get("fio", ""), "email": ci.get("email", ""), "phone": ""}
+                        phones = (ci.get("phones") or {}).get("phones", [])
+                        if phones:
+                            ph = phones[0]
+                            contact["phone"] = f"+{ph.get('country','')}{ph.get('city','')}{ph.get('number','')}"
+                        info["contact"] = contact
                     return "sent", info
                 except Exception as e:
                     return "sent", {}
@@ -1920,8 +1951,13 @@ def _fetch_chat_history(acc: dict, chat_id: str, max_messages: int = 20) -> list
                 continue
             sender_pid = str(msg.get("participantId", ""))
             sender = "applicant" if (cur_pid and sender_pid == cur_pid) else "employer"
-            conversation.append({"sender": sender, "text": text,
-                                  "msg_id": str(msg.get("id", ""))})
+            pd = msg.get("participantDisplay") or {}
+            conversation.append({
+                "sender": sender, "text": text,
+                "msg_id": str(msg.get("id", "")),
+                "actions": msg.get("actions") or {},
+                "is_bot": pd.get("isBot", False),
+            })
         # Return last max_messages entries (most recent context)
         return conversation[-max_messages:]
     except Exception as e:
@@ -2767,7 +2803,7 @@ class BotManager:
         self._stop_event = threading.Event()
         self.account_states: list[AccountState] = []
         self.activity_log: deque = deque(maxlen=100)
-        self.recent_responses: deque = deque(maxlen=20)
+        self.recent_responses: deque = deque(maxlen=100)
         self.llm_log: deque = deque(maxlen=200)    # LLM reply history
         self.vacancy_queues: dict = {}
         self._start_time: datetime = None
@@ -2846,6 +2882,28 @@ class BotManager:
         _load_cache()
         load_config()
         self._start_time = datetime.now()
+        # Load recent responses from applied_vacancies into deque
+        try:
+            with _cache_lock:
+                if _cache_applied:
+                    all_items = []
+                    for acc_name, vacancies in _cache_applied.items():
+                        if isinstance(vacancies, dict):
+                            for vid, info in vacancies.items():
+                                if isinstance(info, dict):
+                                    all_items.append({
+                                        "id": vid, "title": info.get("title", ""),
+                                        "company": info.get("company", ""),
+                                        "time": (info.get("at", "") or "")[:16].replace("T", " "),
+                                        "icon": "✅", "acc": acc_name,
+                                    })
+                    # Sort by time, take last 100
+                    all_items.sort(key=lambda x: x.get("time", ""), reverse=True)
+                    for item in all_items[:100]:
+                        self.recent_responses.append(item)
+                    log_debug(f"Loaded {len(self.recent_responses)} recent responses from cache")
+        except Exception as e:
+            log_debug(f"Failed to load recent responses: {e}")
         self.account_states = [AccountState(acc) for acc in accounts_data]
         for i, state in enumerate(self.account_states):
             t1 = threading.Thread(
@@ -3231,6 +3289,7 @@ class BotManager:
                 "use_oauth_apply": CONFIG.use_oauth_apply,
                 "daily_apply_limit": CONFIG.daily_apply_limit,
                 "stop_on_hh_limit": CONFIG.stop_on_hh_limit,
+                "llm_check_interval": CONFIG.llm_check_interval,
                 "allowed_schedules": CONFIG.allowed_schedules,
                 "questionnaire_templates": CONFIG.questionnaire_templates,
                 "questionnaire_default_answer": CONFIG.questionnaire_default_answer,
@@ -3653,6 +3712,22 @@ class BotManager:
                             info = {**meta_fb, **info}
                         add_applied(acc["name"], vid, info)
 
+                        # Collect HR contact if available
+                        contact = info.get("contact", {})
+                        if contact and (contact.get("email") or contact.get("fio")):
+                            with self._hr_contacts_lock:
+                                if len(self.hr_contacts) < 500:
+                                    self.hr_contacts.append({
+                                        "vacancy_id": vid,
+                                        "title": info.get("title", ""),
+                                        "company": info.get("company", ""),
+                                        "fio": contact.get("fio", ""),
+                                        "email": contact.get("email", ""),
+                                        "phone": contact.get("phone", ""),
+                                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        "acc": state.short,
+                                    })
+
                         title = info.get("title", "Неизвестно")
                         company = info.get("company", "?")
                         sal_from = info.get("salary_from")
@@ -3995,6 +4070,10 @@ class BotManager:
                         # не skipping — fall through to candidates
                     else:
                         skipped_read += 1
+                        di = display_info.get(str(item_id), {})
+                        upsert_interview(str(item_id), acc=state.short, acc_color=state.color,
+                                         employer=di.get("subtitle", ""), vacancy_title=di.get("title", ""),
+                                         chat_status="waiting_hr")
                         log_debug(f"LLM [{state.short}] {item_id}: unread=0, от работодателя, уже отвечали, пропуск: «{last_text}»")
                         continue
                 else:
@@ -4003,6 +4082,10 @@ class BotManager:
             if cur_pid and sender_id == cur_pid:
                 skipped_ours += 1
                 log_debug(f"LLM [{state.short}] {item_id}: unread={unread}, последнее наше, пропуск")
+                di = display_info.get(str(item_id), {})
+                upsert_interview(str(item_id), acc=state.short, acc_color=state.color,
+                                 employer=di.get("subtitle", ""), vacancy_title=di.get("title", ""),
+                                 chat_status="waiting_hr")
                 continue
             if wf:
                 wf_id = wf.get("id", "") if isinstance(wf, dict) else ""
@@ -4078,6 +4161,7 @@ class BotManager:
                     self._add_log(state.short, state.color,
                         f"🤖 [{employer_short}] 🔒 переписка недоступна, пропуск", "warning", neg_id=neg_id)
                     state.llm_replied_msgs.add((neg_id, "locked"))  # permanent skip
+                    upsert_interview(neg_id, acc=state.short, acc_color=state.color, chat_status="locked")
                     continue
 
                 # Persist thread data to interviews DB
@@ -4088,6 +4172,7 @@ class BotManager:
 
                 if not thread.get("needs_reply"):
                     log_debug(f"LLM [{state.short}] {neg_id}: ответ не нужен (последнее сообщение — от соискателя)")
+                    upsert_interview(neg_id, acc=state.short, acc_color=state.color, chat_status="waiting_hr")
                     self._add_log(state.short, state.color, f"🤖 [{employer_short}] последнее сообщение наше, пропуск", "info", neg_id=neg_id)
                     continue
                 last_msg_id = thread["last_msg_id"]
@@ -4137,6 +4222,47 @@ class BotManager:
                 # Fetch full conversation history so LLM has full context
                 full_history = _fetch_chat_history(state.acc, neg_id, max_messages=20)
                 conversation = full_history if full_history else thread["messages"]
+
+                # Detect robot-recruiter with button questions
+                # Check last employer message for actions.text_buttons
+                _last_emp_raw = None
+                if full_history:
+                    for msg_raw in reversed(full_history):
+                        if msg_raw.get("sender") == "employer":
+                            _last_emp_raw = msg_raw
+                            break
+                _raw_actions = (_last_emp_raw or {}).get("actions") or {}
+                _text_buttons = _raw_actions.get("text_buttons", [])
+                _is_bot_msg = (_last_emp_raw or {}).get("is_bot", False)
+                if _text_buttons or _is_bot_msg:
+                    # Robot-recruiter — pick button answer instead of LLM
+                    btn_text = _text_buttons[0].get("text", "ДА") if _text_buttons else "ДА"
+                    for b in _text_buttons:
+                        t_lower = b.get("text", "").lower()
+                        if t_lower in ("да", "yes", "согласен", "подтверждаю", "готов", "готова"):
+                            btn_text = b["text"]
+                            break
+                    log_debug(f"LLM [{state.short}] {neg_id}: робот-рекрутер, кнопки={[b.get('text') for b in _text_buttons]}, отвечаю '{btn_text}'")
+                    self._add_log(state.short, state.color,
+                        f"🤖 [{employer_short}] 🤖 Робот → '{btn_text}'", "info", neg_id=neg_id)
+                    upsert_interview(neg_id, acc=state.short, acc_color=state.color,
+                                     employer=employer_short, vacancy_title=vacancy_title,
+                                     chat_status="robot")
+                    ok = send_negotiation_message(state.acc, neg_id, btn_text)
+                    if ok and ok != "chat_not_found":
+                        state.llm_replied_msgs.add(key)
+                        replied += 1
+                        ts = datetime.now().strftime("%H:%M")
+                        self.llm_log.appendleft({
+                            "time": ts, "acc": state.short, "color": state.color,
+                            "employer": employer_short, "vacancy_title": vacancy_title,
+                            "neg_id": neg_id, "employer_msg": employer_msg[:50],
+                            "bot_reply": f"🤖 Кнопка: {btn_text}", "sent": True,
+                        })
+                    elif not ok:
+                        state._llm_temp_skip[key] = time.time() + 1800
+                    continue
+
                 # Если в истории нет реального сообщения от работодателя — не отвечаем.
                 # Случай 1: только системные события ("Отклик на вакансию" и т.п.) — history пустая
                 # Случай 2: history есть, но последнее сообщение от нас (уже ответили)
@@ -4272,9 +4398,15 @@ class BotManager:
             log_debug(traceback.format_exc())
 
     def _fetch_hh_stats_worker_inner(self, idx: int, state: AccountState) -> None:
-        HH_STATS_INTERVAL = 900  # 15 minutes
+        HH_STATS_INTERVAL = max(CONFIG.llm_check_interval * 60, 120)  # configurable, min 2 min
 
         while not self._stop_event.is_set():
+            # Wait during pause — don't fetch stats or LLM when paused
+            while (self.paused or state.paused) and not self._stop_event.is_set() and not getattr(state, '_deleted', False):
+                time.sleep(2)
+            if self._stop_event.is_set() or getattr(state, '_deleted', False):
+                break
+
             state.hh_stats_loading = True
             try:
                 # Negotiations stats
@@ -4343,7 +4475,13 @@ class BotManager:
                     f"{rs['views']} просмотров резюме, {rs['new_invitations_total']} новых инвайтов"
                 )
 
-                # LLM auto-reply
+                # LLM auto-reply (skip if paused)
+                if self.paused or state.paused:
+                    log_debug(f"LLM [{state.short}]: пропуск — на паузе")
+                    state.hh_stats_loading = False
+                    time.sleep(HH_STATS_INTERVAL)
+                    continue
+
                 _has_llm = CONFIG.llm_api_key or any(
                     p.get("api_key") for p in (CONFIG.llm_profiles or []) if p.get("enabled", True)
                 )
@@ -5568,7 +5706,6 @@ async def api_oauth_touch(idx: int):
     return {"ok": ok, "message": msg}
 
 
-@app.get("/api/account/{idx}/resume_audit")
 @app.get("/api/account/{idx}/test_llm_questionnaire")
 async def api_test_llm_questionnaire(idx: int, vacancy_id: str = ""):
     """Test LLM questionnaire answering without submitting."""
@@ -6051,9 +6188,18 @@ def _parse_cookies_str(raw: str) -> tuple:
     raw = raw.strip()
     raw_line = ""
 
+    # Decode Unicode escapes (\u0021 → !, etc.)
+    raw = raw.encode().decode('unicode_escape', errors='replace') if '\\u00' in raw else raw
+
     if raw.startswith("curl "):
         # cURL: ищем -H 'cookie: ...' или -H "cookie: ..."  (multiline OK)
         m = re.search(r"-H\s+['\"](?:C|c)ookie:\s*([^'\"]+)['\"]", raw, re.DOTALL)
+        if not m:
+            # Chrome uses -b flag: -b $'key=val; ...' or -b 'key=val; ...'
+            m = re.search(r"-b\s+\$?['\"]([^'\"]+)['\"]", raw, re.DOTALL)
+        if not m:
+            # Try --cookie flag
+            m = re.search(r"--cookie\s+['\"]([^'\"]+)['\"]", raw, re.DOTALL)
         if m:
             raw_line = m.group(1).strip()
         else:

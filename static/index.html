@@ -1194,12 +1194,22 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
       <option value="replied">✅ Отправлено</option>
       <option value="no_reply_needed">— Ответ не нужен</option>
       <option value="chat_closed">🔒 Чат закрыт</option>
+      <option value="robot">🤖 Робот-рекрутер</option>
+      <option value="waiting_hr">⏳ Ждём HR</option>
     </select>
     <button class="btn-sm" onclick="llmInterviewsLoad()">↻ Обновить</button>
     <button class="btn-sm" onclick="llmRunNow(this)" style="background:var(--cyan);color:#000;border-color:var(--cyan)">▶ Запустить сейчас</button>
     <button class="btn-sm" onclick="llmResetReplied(this)" title="Очистить историю «уже отвечали» — бот повторно обработает все чаты">🔄 Сбросить историю</button>
     <span id="llm-log-count" style="font-size:11px;color:var(--dim);margin-left:auto"></span>
   </div>
+  <!-- LLM Status bar -->
+  <div id="llm-status-bar" style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+    <span id="llm-st-state" style="font-weight:600">—</span>
+    <span id="llm-st-interval" style="color:var(--dim)">—</span>
+    <span id="llm-st-chats" style="color:var(--cyan)">—</span>
+    <span id="llm-st-replied" style="color:var(--green)">—</span>
+  </div>
+
   <!-- Per-account LLM toggles -->
   <div id="llm-acc-toggles" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
 
@@ -1228,6 +1238,7 @@ textarea.apply-q-answer:focus { outline: none; border-color: var(--cyan); }
           <th>Сообщение работодателя</th>
           <th>Ответ LLM</th>
           <th style="width:90px">Статус</th>
+          <th style="width:80px">Чат</th>
         </tr>
       </thead>
       <tbody id="llm-interviews-body"></tbody>
@@ -2538,6 +2549,68 @@ function llmToggleAccount(idx, btn) {
   sendCmd({type: 'account_llm', idx});
 }
 
+function updateLlmStatusBar(snap) {
+  const stState = document.getElementById('llm-st-state');
+  const stInterval = document.getElementById('llm-st-interval');
+  const stChats = document.getElementById('llm-st-chats');
+  const stReplied = document.getElementById('llm-st-replied');
+  if (!stState) return;
+
+  const cfg = snap?.config || {};
+  const accs = snap?.accounts || [];
+  const globalOn = cfg.llm_enabled;
+  const interval = cfg.llm_check_interval || 15;
+  const anyAccOn = accs.some(a => a.llm_enabled !== false);
+  const paused = snap?.paused || accs.every(a => a.paused);
+
+  // State
+  if (!globalOn) {
+    stState.textContent = '⏹ LLM выключен';
+    stState.style.color = 'var(--dim)';
+  } else if (paused) {
+    stState.textContent = '⏸ На паузе';
+    stState.style.color = 'var(--yellow)';
+  } else if (anyAccOn) {
+    stState.textContent = '✅ LLM работает';
+    stState.style.color = 'var(--green)';
+  } else {
+    stState.textContent = '⚠️ Нет аккаунтов с LLM';
+    stState.style.color = 'var(--yellow)';
+  }
+
+  // Interval
+  stInterval.textContent = `🔄 каждые ${interval}м`;
+
+  // Chat stats from accounts
+  const totalInterviews = accs.reduce((s, a) => s + (a.hh_interviews || 0), 0);
+  const totalUnread = accs.reduce((s, a) => s + (a.hh_unread_by_employer || 0), 0);
+  stChats.textContent = `🎯 ${totalInterviews} интервью`;
+
+  // Replied count from llm_log
+  const llmLog = snap?.llm_log || [];
+  const sentCount = llmLog.filter(l => l.sent).length;
+  const draftCount = llmLog.filter(l => !l.sent).length;
+  stReplied.textContent = `✅ ${sentCount} отправлено · 📝 ${draftCount} черновиков`;
+}
+
+async function llmRunNow() {
+  try {
+    const r = await fetch('/api/llm_run_now', {method: 'POST'});
+    const d = await r.json();
+    if (d.started) {
+      // Visual feedback
+      document.querySelectorAll('.btn-sm').forEach(b => {
+        if (b.textContent.includes('Сейчас')) b.textContent = '🔄 ...';
+      });
+      setTimeout(() => {
+        document.querySelectorAll('.btn-sm').forEach(b => {
+          if (b.textContent.includes('...')) b.textContent = '🔄 Сейчас';
+        });
+      }, 5000);
+    }
+  } catch(e) {}
+}
+
 function oauthToggleAccount(idx, btn) {
   sendCmd({type: 'account_oauth', idx});
 }
@@ -2590,9 +2663,17 @@ async function llmInterviewsLoad() {
   const statusBadge = s => {
     if (s === 'replied')         return '<span class="llm-sent-badge">✅ Отправлено</span>';
     if (s === 'draft')           return '<span class="llm-draft-badge">📝 Черновик</span>';
-    if (s === 'pending_reply')   return '<span style="color:var(--yellow);font-size:11px">⏳ Ждёт</span>';
+    if (s === 'pending_reply')   return '<span style="color:var(--yellow);font-size:11px">⏳ Ждёт ответа</span>';
     if (s === 'chat_closed')     return '<span style="color:var(--dim);font-size:11px">🔒 Закрыт</span>';
     return '<span style="color:var(--dim);font-size:11px">— нет</span>';
+  };
+
+  const chatBadge = s => {
+    if (s === 'robot')       return '<span style="color:var(--magenta);font-size:10px">🤖 Робот</span>';
+    if (s === 'locked')      return '<span style="color:var(--dim);font-size:10px">🔒 Закрыт</span>';
+    if (s === 'waiting_hr')  return '<span style="color:var(--cyan);font-size:10px">⏳ Ждём HR</span>';
+    if (s === 'replied')     return '<span style="color:var(--green);font-size:10px">💬 Ответили</span>';
+    return '';
   };
 
   tbody.innerHTML = rows.map(r => {
@@ -2609,6 +2690,7 @@ async function llmInterviewsLoad() {
       <td class="llm-msg-cell">${empMsg}</td>
       <td class="llm-reply-cell">${botReply}</td>
       <td>${statusBadge(r.status)}</td>
+      <td>${chatBadge(r.chat_status || '')}</td>
     </tr>`;
   }).join('');
 
@@ -3308,6 +3390,7 @@ function renderAll(snap) {
   syncLlmSettings(snap);
   syncScheduleSettings(snap);
   syncAuditSelector(snap);
+  updateLlmStatusBar(snap);
   updatePageTitle(snap);
   checkNotifications(snap);
   if (State.currentTab === 'main') renderMain(snap);
@@ -3568,6 +3651,8 @@ function buildCardHTML(acc) {
         onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
       <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
         onclick="llmToggleAccount(${acc.idx},this)" title="LLM авто-ответы на сообщения HR">💬 Ответы</button>
+      <button class="btn-sm" style="font-size:9px;padding:1px 5px;color:var(--green);border-color:var(--green)"
+        onclick="llmRunNow()" title="Проверить чаты и ответить прямо сейчас">🔄 Сейчас</button>
       ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
       ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
     </div>
@@ -3618,6 +3703,11 @@ function buildCardHTML(acc) {
           <label style="display:flex;align-items:center;gap:4px">📅 Свежесть:
             <select class="smart-filter-sel" data-key="search_period_days" style="font-size:10px;padding:1px 4px">
               <option value="0">Все</option><option value="1">1д</option><option value="3">3д</option><option value="7">7д</option><option value="14">14д</option>
+            </select>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px">💬 LLM каждые:
+            <select class="smart-filter-sel" data-key="llm_check_interval" style="font-size:10px;padding:1px 4px">
+              <option value="2">2м</option><option value="5">5м</option><option value="10">10м</option><option value="15">15м</option><option value="30">30м</option>
             </select>
           </label>
           <label style="display:flex;align-items:center;gap:4px">🛑 Лимит/день:
@@ -3968,7 +4058,7 @@ function renderRecentResponses(snap) {
     list.innerHTML = `<div class="c-dim" style="padding:8px;font-size:11px">${t('recent_empty')}</div>`;
     return;
   }
-  list.innerHTML = snap.recent_responses.slice(0, 15).map(r => {
+  list.innerHTML = snap.recent_responses.slice(0, 50).map(r => {
     const title = r.title ? r.title.substring(0, 35) + (r.title.length > 35 ? '…' : '') : `ID:${r.id}`;
     return `
       <div class="resp-item">
