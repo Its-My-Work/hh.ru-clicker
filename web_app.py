@@ -2919,6 +2919,7 @@ class BotManager:
         for i, ts in enumerate(self.temp_sessions):
             log_debug(f"start(): session {i}: bot_active={ts.get('bot_active')}, resume_hash={bool(ts.get('resume_hash'))}")
             if ts.get("bot_active") and ts.get("resume_hash"):
+                ts["paused"] = False  # Reset pause on startup
                 try:
                     result = self.activate_session(i)
                     log_debug(f"start(): activate_session({i}) = {result}")
@@ -3334,16 +3335,22 @@ class BotManager:
         }
 
     def _run_account_worker(self, idx: int, state: AccountState) -> None:
-        """Thread worker for an account — mirrors TUI run_account_worker logic"""
-        acc = state.acc
-        try:
-            self._run_account_worker_inner(idx, state)
-        except Exception as e:
-            log_debug(f"WORKER CRASHED [{state.short}]: {e}")
-            import traceback
-            log_debug(traceback.format_exc())
-            state.status = "error"
-            state.status_detail = f"Worker crash: {str(e)[:50]}"
+        """Thread worker for an account — auto-restarts on crash"""
+        while not self._stop_event.is_set() and not getattr(state, '_deleted', False):
+            try:
+                self._run_account_worker_inner(idx, state)
+                break  # normal exit
+            except Exception as e:
+                log_debug(f"WORKER CRASHED [{state.short}]: {e}")
+                import traceback
+                log_debug(traceback.format_exc())
+                state.status = "error"
+                state.status_detail = f"Перезапуск через 30с ({str(e)[:30]})"
+                self._add_log(state.short, state.color, f"⚠️ Worker упал: {str(e)[:50]}. Перезапуск через 30с", "error")
+                time.sleep(30)
+                state.status = "idle"
+                state.status_detail = "Перезапущен после ошибки"
+                self._add_log(state.short, state.color, "🔄 Worker перезапущен", "info")
 
     def _run_account_worker_inner(self, idx: int, state: AccountState) -> None:
         acc = state.acc
@@ -3437,7 +3444,16 @@ class BotManager:
                 "info",
             )
 
-            results_by_url, salary_map, schedule_map = asyncio.run(self._collect_all_urls_parallel(state))
+            try:
+                results_by_url, salary_map, schedule_map = asyncio.run(self._collect_all_urls_parallel(state))
+            except Exception as e:
+                log_debug(f"COLLECT CRASH [{state.short}]: {e}")
+                import traceback
+                log_debug(traceback.format_exc())
+                state.status = "error"
+                state.status_detail = f"Ошибка сбора: {str(e)[:50]}"
+                time.sleep(60)
+                continue
             state.vacancy_salaries = salary_map
             state.vacancy_schedules = schedule_map
 
