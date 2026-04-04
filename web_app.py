@@ -313,8 +313,9 @@ def _save_applied_async():
     if not _save_applied_lock.acquire(blocking=False):
         return  # another save in progress
     try:
+        import copy
         with _cache_lock:
-            data = _cache_applied.copy() if _cache_applied else {}
+            data = copy.deepcopy(_cache_applied) if _cache_applied else {}
         tmp = APPLIED_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
@@ -336,8 +337,9 @@ def _save_tests_async():
     if not _save_tests_lock.acquire(blocking=False):
         return
     try:
+        import copy
         with _cache_lock:
-            data = _cache_tests.copy() if _cache_tests else {}
+            data = copy.deepcopy(_cache_tests) if _cache_tests else {}
         tmp = TEST_REQUIRED_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
@@ -4250,9 +4252,9 @@ class BotManager:
                 _raw_actions = (_last_emp_raw or {}).get("actions") or {}
                 _text_buttons = _raw_actions.get("text_buttons", [])
                 _is_bot_msg = (_last_emp_raw or {}).get("is_bot", False)
-                if _text_buttons or _is_bot_msg:
-                    # Robot-recruiter — pick button answer instead of LLM
-                    btn_text = _text_buttons[0].get("text", "ДА") if _text_buttons else "ДА"
+                if _text_buttons:
+                    # Robot-recruiter with buttons — pick button answer instead of LLM
+                    btn_text = _text_buttons[0].get("text", "ДА")
                     for b in _text_buttons:
                         t_lower = b.get("text", "").lower()
                         if t_lower in ("да", "yes", "согласен", "подтверждаю", "готов", "готова"):
