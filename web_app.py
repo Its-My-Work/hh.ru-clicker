@@ -352,7 +352,6 @@ def _save_tests_async():
             pass
     finally:
         _save_tests_lock.release()
-        tmp.unlink(missing_ok=True)
 
 
 _save_interviews_lock = threading.Lock()
@@ -470,7 +469,8 @@ def load_browser_sessions() -> list:
 
 def save_browser_sessions(sessions: list):
     """Сохранить браузерные сессии в файл (в фоновом потоке)."""
-    snapshot = list(sessions)
+    import copy
+    snapshot = copy.deepcopy(sessions)
     def _write():
         tmp = SESSIONS_FILE.with_suffix(".tmp")
         try:
@@ -1467,6 +1467,8 @@ async def send_response_async(acc: dict, vid: str) -> tuple:
                 status_code = r.status
 
         log_debug(f"   Ответ HTTP: {status_code} | Размер: {len(txt)}")
+        if status_code >= 400:
+            log_debug(f"   Тело ответа: {txt[:300]}")
 
         if status_code in (401, 403):
             return "auth_error", {}
@@ -2685,8 +2687,18 @@ class AccountState:
         self.use_oauth = bool(acc_data.get("use_oauth", False))  # per-account OAuth toggle
         self.oauth_status = ""  # "active", "no_token", "error"
 
-        self.daily_sent = 0  # откликов за сегодня
         self.daily_date = datetime.now().strftime("%Y-%m-%d")  # дата сброса счётчика
+        # Count today's applies from persisted cache
+        self.daily_sent = 0
+        try:
+            with _cache_lock:
+                acc_applied = (_cache_applied or {}).get(self.name, {})
+                today = self.daily_date
+                for vid, info in acc_applied.items():
+                    if isinstance(info, dict) and str(info.get("at", "")).startswith(today):
+                        self.daily_sent += 1
+        except Exception:
+            pass
         self.hard_stopped = False  # жёсткая остановка (лимит или daily)
 
         self.resume_touch_enabled = True
@@ -2947,6 +2959,11 @@ class BotManager:
             state = self.temp_states.get(temp_idx)
         if state:
             state.paused = not state.paused
+            if not state.paused:
+                # Reset hard stop / limit so worker can continue
+                state.hard_stopped = False
+                state.limit_exceeded = False
+                state.limit_reset_time = None
             msg = (
                 f"⏸️ Аккаунт {state.short} приостановлен"
                 if state.paused
@@ -3079,6 +3096,9 @@ class BotManager:
         """Full JSON snapshot for WS broadcast"""
         now = datetime.now()
         uptime = int((now - self._start_time).total_seconds()) if self._start_time else 0
+
+        # All states: regular + temp sessions (for global_stats, vacancy_queues)
+        all_states = list(self.account_states) + list(self.temp_states.values())
 
         accounts = []
         for i, s in enumerate(self.account_states):
@@ -3230,6 +3250,9 @@ class BotManager:
                     "cookies_expired": s.cookies_expired,
                     "llm_enabled": s.llm_enabled,
                     "use_oauth": s.use_oauth,
+                    "daily_sent": s.daily_sent,
+                    "daily_limit": CONFIG.daily_apply_limit,
+                    "hard_stopped": s.hard_stopped,
                 })
             else:
                 # Неактивная сессия — заглушка
@@ -3318,10 +3341,10 @@ class BotManager:
                 "llm_profile_mode": CONFIG.llm_profile_mode,
             },
             "global_stats": {
-                "total_sent": sum(s.sent for s in self.account_states),
-                "total_tests": sum(s.tests for s in self.account_states),
-                "total_errors": sum(s.errors for s in self.account_states),
-                "total_found": sum(s.found_vacancies for s in self.account_states),
+                "total_sent": sum(s.sent for s in all_states),
+                "total_tests": sum(s.tests for s in all_states),
+                "total_errors": sum(s.errors for s in all_states),
+                "total_found": sum(s.found_vacancies for s in all_states),
                 "storage_total": storage_stats["total"],
                 "storage_tests": storage_stats["tests"],
             },
@@ -3332,7 +3355,7 @@ class BotManager:
                     if s.vacancies_queue
                     else [],
                 }
-                for s in self.account_states
+                for s in all_states
             },
         }
 
@@ -3360,8 +3383,40 @@ class BotManager:
         while not self._stop_event.is_set() and not state._deleted:
             # Global + per-account pause
             while (self.paused or state.paused) and not self._stop_event.is_set() and not state._deleted:
-                state.status = "idle"
-                state.status_detail = "Пауза пользователем"
+                # Auto-reset daily limit pause when new day starts
+                if state.hard_stopped:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    if state.daily_date != today:
+                        state.daily_sent = 0
+                        state.daily_date = today
+                        state.hard_stopped = False
+                        state.paused = False
+                        state.limit_exceeded = False
+                        state.limit_reset_time = None
+                        state.status = "idle"
+                        state.status_detail = "Новый день — лимит сброшен"
+                        self._add_log(state.short, state.color,
+                            "🌅 Новый день! Лимит сброшен, продолжаю работу", "success")
+                        break
+                if state.hard_stopped:
+                    state.status = "limit"
+                    if CONFIG.daily_apply_limit > 0 and state.daily_sent >= CONFIG.daily_apply_limit:
+                        state.status_detail = f"Дневной лимит: {state.daily_sent}/{CONFIG.daily_apply_limit}. Сброс завтра в 00:00"
+                    else:
+                        state.status_detail = "Лимит HH. Сброс завтра в 00:00"
+                elif state.limit_exceeded:
+                    state.status = "limit"
+                    if state.limit_reset_time:
+                        remaining = int((state.limit_reset_time - datetime.now()).total_seconds())
+                        if remaining > 0:
+                            state.status_detail = f"Лимит HH. Проверка через {remaining // 60}м{remaining % 60:02d}с"
+                        else:
+                            state.status_detail = "Лимит HH. Проверка сейчас..."
+                    else:
+                        state.status_detail = "Лимит HH. Проверка через 1м"
+                else:
+                    state.status = "idle"
+                    state.status_detail = "Пауза пользователем"
                 time.sleep(1)
 
             if self._stop_event.is_set():
@@ -3401,7 +3456,11 @@ class BotManager:
 
             # === ПРОВЕРКА ЛИМИТА ===
             if state.limit_exceeded:
-                if state.limit_reset_time and now >= state.limit_reset_time:
+                # If no reset time set, schedule a check soon
+                if not state.limit_reset_time:
+                    state.limit_reset_time = now + timedelta(minutes=1)
+
+                if now >= state.limit_reset_time:
                     state.status = "checking"
                     state.status_detail = "Проверка сброса лимита..."
                     self._add_log(state.short, state.color, "🔍 Проверяю сброс лимита...", "info")
@@ -3409,6 +3468,8 @@ class BotManager:
                     if not check_limit(acc):
                         state.limit_exceeded = False
                         state.limit_reset_time = None
+                        state.paused = False
+                        state.hard_stopped = False
                         state.status_detail = ""
                         self._add_log(
                             state.short, state.color, "✅ Лимит сброшен! Продолжаю работу", "success"
@@ -3426,6 +3487,8 @@ class BotManager:
                         continue
                 else:
                     state.status = "limit"
+                    remaining = int((state.limit_reset_time - now).total_seconds())
+                    state.status_detail = f"Проверка через {remaining}с"
                     time.sleep(30)
                     continue
 
@@ -3633,9 +3696,9 @@ class BotManager:
                     state.hard_stopped = True
                     state.paused = True
                     state.status = "limit"
-                    state.status_detail = f"Дневной лимит: {state.daily_sent}/{CONFIG.daily_apply_limit}"
+                    state.status_detail = f"Дневной лимит: {state.daily_sent}/{CONFIG.daily_apply_limit}. Сброс завтра в 00:00"
                     self._add_log(state.short, state.color,
-                        f"🛑 Дневной лимит {CONFIG.daily_apply_limit} откликов. Пауза до завтра.", "error")
+                        f"🛑 Дневной лимит {CONFIG.daily_apply_limit} откликов. Пауза до завтра 00:00.", "error")
                     break
 
                 # Pre-check: skip inconsistent vacancies if enabled
@@ -4277,6 +4340,10 @@ class BotManager:
                             "neg_id": neg_id, "employer_msg": employer_msg[:50],
                             "bot_reply": f"🤖 Кнопка: {btn_text}", "sent": True,
                         })
+                    elif ok == "chat_not_found":
+                        state._llm_no_chat.add(neg_id)
+                        state.llm_replied_msgs.add(key)
+                        log_debug(f"LLM [{state.short}] {neg_id}: робот-кнопка 409, чат закрыт — добавлен в _llm_no_chat")
                     elif not ok:
                         state._llm_temp_skip[key] = time.time() + 1800
                     continue
@@ -4416,8 +4483,6 @@ class BotManager:
             log_debug(traceback.format_exc())
 
     def _fetch_hh_stats_worker_inner(self, idx: int, state: AccountState) -> None:
-        HH_STATS_INTERVAL = max(CONFIG.llm_check_interval * 60, 120)  # configurable, min 2 min
-
         while not self._stop_event.is_set():
             # Wait during pause — don't fetch stats or LLM when paused
             while (self.paused or state.paused) and not self._stop_event.is_set() and not getattr(state, '_deleted', False):
@@ -4497,7 +4562,7 @@ class BotManager:
                 if self.paused or state.paused:
                     log_debug(f"LLM [{state.short}]: пропуск — на паузе")
                     state.hh_stats_loading = False
-                    time.sleep(HH_STATS_INTERVAL)
+                    time.sleep(max(CONFIG.llm_check_interval * 60, 120))
                     continue
 
                 _has_llm = CONFIG.llm_api_key or any(
@@ -4510,17 +4575,18 @@ class BotManager:
                     self._add_log(state.short, state.color, "🤖 LLM: нет API ключа ни в одном профиле", "warning")
                 elif not state.llm_enabled:
                     log_debug(f"LLM [{state.short}]: пропуск — выключено для аккаунта")
-                elif not _neg_count:
-                    self._add_log(state.short, state.color, "🤖 LLM: нет переговоров в статусе Интервью", "info")
                 else:
-                    self._add_log(state.short, state.color, f"🤖 LLM: проверяю {_neg_count} переговоров…", "info")
+                    if _neg_count:
+                        self._add_log(state.short, state.color, f"🤖 LLM: проверяю {_neg_count} переговоров…", "info")
+                    else:
+                        self._add_log(state.short, state.color, "🤖 LLM: нет переговоров в статусе Интервью, проверяю чаты…", "info")
                     self._process_llm_replies(state)
             except Exception as e:
                 log_debug(f"HH stats fetch error ({state.short}): {e}")
             finally:
                 state.hh_stats_loading = False
 
-            time.sleep(HH_STATS_INTERVAL)
+            time.sleep(max(CONFIG.llm_check_interval * 60, 120))
 
 
 # ============================================================
@@ -4546,7 +4612,7 @@ async def startup():
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.websocket("/ws")

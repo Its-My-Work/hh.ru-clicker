@@ -5,4 +5,6 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - ./web_app.py:/app/web_app.py
+      - ./static:/app/static
     restart: unless-stopped
