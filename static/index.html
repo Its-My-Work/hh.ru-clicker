@@ -3640,6 +3640,7 @@ function buildCardHTML(acc) {
     </div>
     <div class="acc-meta" id="acc-meta-${acc.idx}"></div>
     <div class="acc-hh-stats" id="acc-hh-${acc.idx}">${t('card_hh_loading')}</div>
+    <div id="acc-llm-status-${acc.idx}" style="font-size:11px;padding:2px 0;color:var(--cyan);display:none"></div>
     <div class="acc-resume-stats" id="acc-rs-${acc.idx}" style="display:none">
       <span class="acc-resume-stat">👁️ <span id="acc-rs-views-${acc.idx}">0</span> ${t('rs_views')}</span>
       <span class="acc-resume-stat c-cyan">+<span id="acc-rs-vnew-${acc.idx}">0</span> новых</span>
@@ -4024,6 +4025,29 @@ function updateCard(card, acc) {
     llmBtn.textContent = enabled ? '💬 Ответы ✅' : '💬 Ответы ❌';
     llmBtn.classList.toggle('llm-on', enabled);
     llmBtn.classList.toggle('llm-off', !enabled);
+  }
+  // LLM status line on card
+  const llmSt = document.getElementById('acc-llm-status-' + acc.idx);
+  if (llmSt) {
+    const globalLlm = State.lastSnapshot?.config?.llm_enabled;
+    const accLlm = acc.llm_enabled !== false;
+    if (!globalLlm) {
+      llmSt.style.display = '';
+      llmSt.textContent = '🤖 LLM глобально выключен';
+      llmSt.style.color = 'var(--red)';
+    } else if (!accLlm) {
+      llmSt.style.display = '';
+      llmSt.textContent = '🤖 LLM выключен для аккаунта';
+      llmSt.style.color = 'var(--dim)';
+    } else if (acc.llm_status) {
+      llmSt.style.display = '';
+      llmSt.textContent = '🤖 ' + acc.llm_status + (acc.llm_replied_count ? ` (всего: ${acc.llm_replied_count})` : '');
+      llmSt.style.color = acc.llm_status.startsWith('✅') ? 'var(--green)' : acc.llm_status.startsWith('💤') ? 'var(--dim)' : 'var(--cyan)';
+    } else {
+      llmSt.style.display = '';
+      llmSt.textContent = '🤖 LLM: ожидание первого цикла';
+      llmSt.style.color = 'var(--dim)';
+    }
   }
   const oauthBtn = document.getElementById('acc-oauth-btn-' + acc.idx);
   if (oauthBtn) {

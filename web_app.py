@@ -2770,6 +2770,9 @@ class AccountState:
         self._llm_no_chat: set = set()       # {neg_id} chats that returned 409 (permanently closed/locked)
         self.hh_interview_neg_ids: list = [] # negotiation IDs from last INTERVIEW fetch
         self.llm_enabled: bool = True        # per-account LLM toggle (overridden by global CONFIG.llm_enabled)
+        self.llm_status: str = ""            # human-readable LLM status for dashboard display
+        self.llm_replied_count: int = 0      # total replies sent this session
+        self.llm_pending_chats: int = 0      # chats awaiting reply (from last scan)
         self._llm_lock = threading.Lock()    # prevents concurrent _process_llm_replies for this account
         self._msg_consecutive: dict = {}     # {neg_id: count} consecutive applicant messages without HR reply
         self._test_failures: dict = {}       # {vid: fail_count} questionnaire fill failures
@@ -3172,6 +3175,9 @@ class BotManager:
                 "url_stats": dict(s.url_stats),
                 "cookies_expired": s.cookies_expired,
                 "llm_enabled": s.llm_enabled,
+                "llm_status": s.llm_status,
+                "llm_replied_count": s.llm_replied_count,
+                "llm_pending_chats": s.llm_pending_chats,
                 "use_oauth": s.use_oauth,
                 "daily_sent": s.daily_sent,
                 "daily_limit": CONFIG.daily_apply_limit,
@@ -4186,10 +4192,14 @@ class BotManager:
 
         log_debug(f"LLM [{state.short}]: {len(candidates)} кандидатов (прочитанных: {skipped_read}, наших: {skipped_ours}, системных: {skipped_system})")
         if not candidates:
+            state.llm_pending_chats = 0
+            state.llm_status = f"💤 Нет новых (наших: {skipped_ours}, закр.: {skipped_locked})"
             self._add_log(state.short, state.color,
                 f"🤖 LLM: нет новых сообщений (прочит.: {skipped_read}, наших: {skipped_ours}, сист.: {skipped_system}, закрыт: {skipped_locked})", "info")
             return
 
+        state.llm_pending_chats = len(candidates)
+        state.llm_status = f"🔄 Обработка {len(candidates)} чатов..."
         self._add_log(state.short, state.color, f"🤖 LLM: {len(candidates)} чатов требуют ответа", "info")
 
         for i, neg_id in enumerate(candidates[:15]):  # limit to 15 per cycle
@@ -4470,8 +4480,12 @@ class BotManager:
                 except Exception:
                     pass
 
+        state.llm_replied_count += replied
         if replied:
+            state.llm_status = f"✅ {replied} ответов отправлено"
             log_debug(f"LLM auto-reply [{state.short}]: {replied} ответов отправлено")
+        elif candidates:
+            state.llm_status = f"⏳ {len(candidates)} чатов, 0 отправлено"
 
     def _fetch_hh_stats_worker(self, idx: int, state: AccountState) -> None:
         """Thread worker for HH stats polling"""
@@ -4484,8 +4498,8 @@ class BotManager:
 
     def _fetch_hh_stats_worker_inner(self, idx: int, state: AccountState) -> None:
         while not self._stop_event.is_set():
-            # Wait during pause — don't fetch stats or LLM when paused
-            while (self.paused or state.paused) and not self._stop_event.is_set() and not getattr(state, '_deleted', False):
+            # Wait only during global pause — LLM/stats should work even with daily limit pause
+            while self.paused and not self._stop_event.is_set() and not getattr(state, '_deleted', False):
                 time.sleep(2)
             if self._stop_event.is_set() or getattr(state, '_deleted', False):
                 break
@@ -4502,7 +4516,7 @@ class BotManager:
                     )
                     state.hh_stats_loading = False
                     # Don't overwrite real stats with zeroes on auth failure
-                    self._stop_event.wait(HH_STATS_INTERVAL)
+                    self._stop_event.wait(max(CONFIG.llm_check_interval * 60, 120))
                     continue
                 old_interviews = state.hh_interviews
                 state.hh_interviews = stats["interview"]
