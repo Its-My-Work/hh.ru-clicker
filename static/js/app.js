@@ -59,7 +59,7 @@ const T = {
     btn_launch: '▶ Запустить',
     btn_delete: '✕ Удалить',
     card_apply_tests: 'Откликаться на вакансии с Опросником',
-    letter_section: '✉️ Письмо',
+    letter_section: '✉️ Сопроводительные письма',
     url_section: '🔗 URL поиска',
     btn_save: '💾 Сохранить',
     btn_apply_url: '💾 Применить',
@@ -2399,11 +2399,7 @@ function updateCard(card, acc) {
   if (llmSt) {
     const globalLlm = State.lastSnapshot?.config?.llm_enabled;
     const accLlm = acc.llm_enabled !== false;
-    if (!globalLlm) {
-      llmSt.style.display = '';
-      llmSt.textContent = '🤖 LLM глобально выключен';
-      llmSt.style.color = 'var(--red)';
-    } else if (!accLlm) {
+    if (!accLlm) {
       llmSt.style.display = '';
       llmSt.textContent = '🤖 LLM выключен для аккаунта';
       llmSt.style.color = 'var(--dim)';

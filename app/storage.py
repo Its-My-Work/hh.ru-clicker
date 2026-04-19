@@ -295,23 +295,9 @@ def get_stats() -> dict:
     with _cache_lock:
         applied = _cache_applied or {}
         tests = _cache_tests or {}
-    # Собрать вакансии по аккаунтам (applied + tests)
-    by_acc = {}
-    all_vids = set()
-    for acc, vacancies in applied.items():
-        acc_vids = set(vacancies.keys())
-        by_acc[acc] = acc_vids
-        all_vids.update(acc_vids)
-    for vid, info in tests.items():
-        acc = info.get("account_name", "")
-        if acc:
-            if acc not in by_acc:
-                by_acc[acc] = set()
-            by_acc[acc].add(vid)
-            all_vids.add(vid)
-    total = len(all_vids)
-    by_acc_counts = {acc: len(vids) for acc, vids in by_acc.items()}
-    return {"total": total, "tests": len(tests), "by_acc": by_acc_counts}
+    total = sum(len(v) for v in applied.values())
+    by_acc = {k: len(v) for k, v in applied.items()}
+    return {"total": total, "tests": len(tests), "by_acc": by_acc}
 
 
 def get_applied_list(limit: int = 300) -> list:
