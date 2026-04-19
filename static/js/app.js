@@ -1972,7 +1972,7 @@ function buildCardHTML(acc) {
       </div>
       <div class="stat-box">
         <div class="stat-val c-orange" id="acc-session-already-${acc.idx}">0</div>
-        <div class="stat-lbl">Уже отклик</div>
+        <div class="stat-lbl">Ранее откликались</div>
       </div>
       <div class="stat-box">
         <div class="stat-val c-blue" id="acc-session-db-${acc.idx}">0</div>

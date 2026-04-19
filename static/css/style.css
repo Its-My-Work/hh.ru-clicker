@@ -156,13 +156,13 @@ body {
 }
 .acc-session-stat {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   margin-bottom: 10px;
 }
 .acc-total-stat {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   margin-bottom: 10px;
 }
