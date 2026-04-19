@@ -13,6 +13,7 @@ const T = {
     tab_views: '👁️ Просмотры',
     tab_apply: '🚀 Отклик',
     tab_settings: '⚙️ Настройки',
+    tab_llm: '💬 ИИ Ответы',
     // Header
     hdr_found: 'найдено',
     hdr_replies: 'откликов',
