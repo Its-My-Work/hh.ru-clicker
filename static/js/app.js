@@ -2022,7 +2022,6 @@ function buildCardHTML(acc) {
       <div class="acc-vacancy-title c-dim">${t('card_waiting')}</div>
     </div>
     <div class="acc-meta" id="acc-meta-${acc.idx}"></div>
-    <div class="acc-hh-stats" id="acc-hh-${acc.idx}">${t('card_hh_loading')}</div>
     <div id="acc-llm-status-${acc.idx}" style="font-size:11px;padding:2px 0;color:var(--cyan);display:none"></div>
     <div class="acc-resume-stats" id="acc-rs-${acc.idx}" style="display:none">
       <span class="acc-resume-stat">👁️ <span id="acc-rs-views-${acc.idx}">0</span> ${t('rs_views')}</span>
@@ -2030,10 +2029,6 @@ function buildCardHTML(acc) {
       <span class="acc-resume-stat">🔎 <span id="acc-rs-shows-${acc.idx}">0</span> ${t('rs_shows')}</span>
       <span class="acc-resume-stat c-green">📬 <span id="acc-rs-inv-${acc.idx}">0</span> ${t('rs_inv')}</span>
       <span class="acc-touch-timer c-yellow" id="acc-touch-timer-${acc.idx}" style="display:none"></span>
-    </div>
-    <div>
-      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние отклики:</div>
-      <div class="acc-history" id="acc-hist-${acc.idx}"></div>
     </div>
     <div>
       <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние действия:</div>
@@ -2327,39 +2322,11 @@ function updateCard(card, acc) {
   const meta = document.getElementById('acc-meta-' + acc.idx);
   if (meta) {
     const parts = [];
-    if (acc.found_vacancies > 0) parts.push(`Найдено ${acc.found_vacancies} вакансий`);
     if (acc.next_resume_touch) parts.push(`Подъем резюме через: ${acc.next_resume_touch}`);
     meta.innerHTML = parts.join('<br>');
   }
 
-  // HH stats
-  const hh = document.getElementById('acc-hh-' + acc.idx);
-  if (hh) {
-    if (acc.hh_stats_loading && !acc.hh_stats_updated) {
-      hh.textContent = t('card_hh_loading');
-    } else if (acc.hh_stats_updated) {
-      const recent = acc.hh_interviews_recent ?? acc.hh_interviews ?? 0;
-      const total  = acc.hh_interviews || 0;
-      const intrvStr = total > recent
-        ? `<span style="color:#f0c060">🎯 ${recent}</span><span class="c-dim"> (${total} всего)</span>`
-        : `<span style="color:#f0c060">🎯 ${recent}</span>`;
-      const unreadStr = acc.hh_unread_by_employer ? ` &nbsp;<span class="c-blue">📨 ${acc.hh_unread_by_employer} HR не чит.</span>` : '';
-      hh.innerHTML =
-        intrvStr + ` ${t('hh_interviews')} &nbsp;` +
-        `<span class="c-yellow">👁 ${acc.hh_viewed}</span> ${t('hh_viewed')} &nbsp;` +
-        `<span class="c-red">❌ ${acc.hh_discards}</span> ${t('hh_discards')}` +
-        unreadStr +
-        ` &nbsp;<span class="c-dim">(${acc.hh_stats_updated})</span>`;
-    } else {
-      hh.textContent = acc.hh_stats_loading ? '⏳ HH...' : '—';
-    }
-  }
-
-  // History
-  const hist = document.getElementById('acc-hist-' + acc.idx);
-  if (hist && acc.action_history && acc.action_history.length > 0) {
-    hist.textContent = acc.action_history.slice(-5).join('  |  ');
-  }
+  // HH stats removed
 
   // Per-account event log
   const elog = document.getElementById('acc-elog-' + acc.idx);
