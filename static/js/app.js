@@ -1528,6 +1528,13 @@ function buildSessList(snap) {
       `<div style="font-size:11px;color:var(--dim)">` +
         `resume_hash: <b style="font-family:monospace;color:var(--text)">${esc((acc.resume_hash||'').slice(0,14))}...</b>` +
       `</div>` +
+      `<div style="margin-top:6px">` +
+        `<span class="touch-toggle ${acc.resume_touch_enabled !== false ? 'on' : 'off'}" id="acc-touch-toggle-${acc.idx}" onclick="touchToggle(${acc.idx},this)" title="Авто-подъём резюме вкл/выкл">` +
+          `<span class="tgl-dot"></span>` +
+          `<span>Авто-подъём резюме</span>` +
+          `<span id="acc-touch-label-${acc.idx}">${acc.resume_touch_enabled !== false ? '🔁 вкл' : '⏸ выкл'}</span>` +
+        `</span>` +
+      `</div>` +
       `<div id="sess-edit-form-${acc.idx}" style="display:none;margin-top:10px">` +
         `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">` +
           `<div><div style="font-size:11px;color:var(--dim);margin-bottom:3px">Имя</div>` +
