@@ -1985,6 +1985,29 @@ function buildCardHTML(acc) {
         <div class="stat-lbl">Ошибок</div>
       </div>
     </div>
+    <div style="font-weight:700;margin:8px 0 4px 0;">Общая статистика</div>
+    <div class="acc-total-stat">
+      <div class="stat-box">
+        <div class="stat-val c-blue" id="acc-total-db-${acc.idx}">0</div>
+        <div class="stat-lbl">Вакансий в базе</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-magenta" id="acc-total-tests-${acc.idx}">0</div>
+        <div class="stat-lbl">Опросники</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-green" id="acc-total-sent-${acc.idx}">0</div>
+        <div class="stat-lbl">Отклики</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" style="color:#f0c060" id="acc-total-intrv-${acc.idx}">0</div>
+        <div class="stat-lbl">Интервью</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-red" id="acc-total-rej-${acc.idx}">0</div>
+        <div class="stat-lbl">Отказы</div>
+      </div>
+    </div>
     <div class="acc-stats">
       <div class="stat-box" title="Сессия / Всего за всё время">
         <div class="stat-val c-green" id="acc-sent-${acc.idx}">0</div>
@@ -2227,6 +2250,15 @@ function updateCard(card, acc) {
   setText('acc-session-tests-' + acc.idx, g.total_tests || 0);
   setText('acc-session-sent-' + acc.idx, g.total_sent || 0);
   setText('acc-session-err-' + acc.idx, g.total_errors || 0);
+
+  // Total stats
+  setText('acc-total-db-' + acc.idx, g.storage_total || 0);
+  setText('acc-total-tests-' + acc.idx, g.storage_tests || 0);
+  setText('acc-total-sent-' + acc.idx, g.total_sent || 0);
+  const totalInterviews = State.lastSnapshot?.accounts?.reduce((sum, a) => sum + (a.hh_interviews || 0), 0) || 0;
+  setText('acc-total-intrv-' + acc.idx, totalInterviews);
+  const totalRejections = State.lastSnapshot?.accounts?.reduce((sum, a) => sum + (a.errors || 0), 0) || 0;
+  setText('acc-total-rej-' + acc.idx, totalRejections);
 
   // Questionnaire sent (show when > 0)
   const qBox = document.getElementById('acc-qsent-box-' + acc.idx);
