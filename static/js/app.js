@@ -5,7 +5,7 @@ const T = {
   ru: {
     // Tabs
     tab_main: '📊 Главная',
-    tab_log: '📜 Лог',
+    tab_log: '📜 Логи',
     tab_applied: '✅ Отклики',
     tab_tests: '🧪 Тесты',
     tab_db: '📂 База',
@@ -41,7 +41,7 @@ const T = {
     stat_replies: 'Отклики',
     stat_tests: 'Тесты',
     stat_surveys: '📝 Опросы',
-    stat_already: 'Уже',
+    stat_already: 'Откликались ранее',
     stat_errors: 'Ошибки',
     stat_salary: '💰 Зарплата',
     stat_interviews: '🎯 Интервью',
@@ -2015,13 +2015,13 @@ function buildCardHTML(acc) {
         <span id="acc-touch-label-${acc.idx}">${acc.resume_touch_enabled !== false ? '🔁 вкл' : '⏸ выкл'}</span>
       </span>
       <button class="btn-sm" id="acc-touch-btn-${acc.idx}"
-        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме прямо сейчас">📤 Сейчас</button>
+        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме">📤 Сейчас</button>
       <button class="btn-sm"
         onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
       <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
-        onclick="llmToggleAccount(${acc.idx},this)" title="LLM авто-ответы на сообщения HR">💬 Ответы</button>
+        onclick="llmToggleAccount(${acc.idx},this)" title="ИИ ответы">💬 Ответы</button>
       <button class="btn-sm" style="font-size:9px;padding:1px 5px;color:var(--green);border-color:var(--green)"
-        onclick="llmRunNow(this)" title="Проверить чаты и ответить прямо сейчас">🔄 Сейчас</button>
+        onclick="llmRunNow(this)" title="Проверить чаты">🔄 Сейчас</button>
       ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
       ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
     </div>
@@ -2281,8 +2281,8 @@ function updateCard(card, acc) {
   const meta = document.getElementById('acc-meta-' + acc.idx);
   if (meta) {
     const parts = [];
-    if (acc.found_vacancies > 0) parts.push(`🔍 ${acc.found_vacancies} найдено`);
-    if (acc.next_resume_touch) parts.push(`📤 резюме: ${acc.next_resume_touch}`);
+    if (acc.found_vacancies > 0) parts.push(`🔍${acc.found_vacancies} вакансий найдено`);
+    if (acc.next_resume_touch) parts.push(`Подьъем резюме через: ${acc.next_resume_touch}`);
     meta.textContent = parts.join('  ');
   }
 
