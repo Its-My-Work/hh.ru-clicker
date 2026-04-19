@@ -41,6 +41,7 @@ const T = {
     // Card labels
     stat_replies: 'Отклики',
     stat_tests: 'Опросники',
+    stat_viewed: 'Просмотрено',
     stat_surveys: '📝 Опросы',
     stat_already: 'Откликались ранее',
     stat_errors: 'Ошибки',
@@ -275,6 +276,7 @@ const T = {
     // Card labels
     stat_replies: 'Replies',
     stat_tests: 'Tests',
+    stat_viewed: 'Viewed',
     stat_surveys: '📝 Surveys',
     stat_already: 'Already',
     stat_errors: 'Errors',
@@ -2000,6 +2002,10 @@ function buildCardHTML(acc) {
         <div class="stat-lbl">Отклики</div>
       </div>
       <div class="stat-box">
+        <div class="stat-val c-yellow" id="acc-total-viewed-${acc.idx}">0</div>
+        <div class="stat-lbl">${t('stat_viewed')}</div>
+      </div>
+      <div class="stat-box">
         <div class="stat-val" style="color:#f0c060" id="acc-total-intrv-${acc.idx}">0</div>
         <div class="stat-lbl">Интервью</div>
       </div>
@@ -2252,13 +2258,12 @@ function updateCard(card, acc) {
   setText('acc-session-err-' + acc.idx, g.total_errors || 0);
 
   // Total stats
-  setText('acc-total-db-' + acc.idx, g.storage_total || 0);
-  setText('acc-total-tests-' + acc.idx, g.storage_tests || 0);
-  setText('acc-total-sent-' + acc.idx, g.total_sent || 0);
-  const totalInterviews = State.lastSnapshot?.accounts?.reduce((sum, a) => sum + (a.hh_interviews || 0), 0) || 0;
-  setText('acc-total-intrv-' + acc.idx, totalInterviews);
-  const totalRejections = State.lastSnapshot?.accounts?.reduce((sum, a) => sum + (a.errors || 0), 0) || 0;
-  setText('acc-total-rej-' + acc.idx, totalRejections);
+  setText('acc-total-db-' + acc.idx, acc.found_vacancies || 0);
+  setText('acc-total-tests-' + acc.idx, acc.tests || 0);
+  setText('acc-total-sent-' + acc.idx, acc.total_applied || 0);
+  setText('acc-total-viewed-' + acc.idx, acc.hh_viewed || 0);
+  setText('acc-total-intrv-' + acc.idx, acc.hh_interviews || 0);
+  setText('acc-total-rej-' + acc.idx, acc.hh_discards || 0);
 
   // Questionnaire sent (show when > 0)
   const qBox = document.getElementById('acc-qsent-box-' + acc.idx);
