@@ -2281,7 +2281,10 @@ function updateCard(card, acc) {
   const meta = document.getElementById('acc-meta-' + acc.idx);
   if (meta) {
     const parts = [];
-    if (acc.found_vacancies > 0) parts.push(`🔍 Найдено ${acc.found_vacancies} вакансий <br>`);
+    if (acc.found_vacancies > 0) {
+      parts.push(`🔍 Найдено ${acc.found_vacancies} вакансий`);
+      meta.innerHTML = parts.join('<br>');
+    }
     if (acc.next_resume_touch) parts.push(`Подъем резюме через: ${acc.next_resume_touch}`);
     meta.textContent = parts.join('  ');
   }
