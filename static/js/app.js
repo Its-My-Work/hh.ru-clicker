@@ -2016,19 +2016,14 @@ function buildCardHTML(acc) {
     <div class="acc-actions">
       <button class="btn-sm" id="acc-pause-btn-${acc.idx}"
         onclick="sendCmd({type:'account_pause', idx:${acc.idx}})">${t('btn_acc_pause')}</button>
-      <span class="touch-toggle ${acc.resume_touch_enabled !== false ? 'on' : 'off'}" id="acc-touch-toggle-${acc.idx}" onclick="touchToggle(${acc.idx},this)" title="Авто-подъём резюме вкл/выкл">
-        <span class="tgl-dot"></span>
-        <span>Авто-подъём резюме</span>
-        <span id="acc-touch-label-${acc.idx}">${acc.resume_touch_enabled !== false ? '🔁 вкл' : '⏸ выкл'}</span>
-      </span>
       <button class="btn-sm" id="acc-touch-btn-${acc.idx}"
-        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме">📤 Сейчас</button>
+        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме">📤 Поднять резюме</button>
       <button class="btn-sm"
         onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
       <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
-        onclick="llmToggleAccount(${acc.idx},this)" title="ИИ ответы">💬 Ответы</button>
+        onclick="llmToggleAccount(${acc.idx},this)" title="ИИ ответы">💬 ИИ Ответы</button>
       <button class="btn-sm" style="font-size:9px;padding:1px 5px;color:var(--green);border-color:var(--green)"
-        onclick="llmRunNow(this)" title="Проверить чаты">🔄 Сейчас</button>
+        onclick="llmRunNow(this)" title="Проверить чаты">🔄 Проверить чат</button>
       ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
       ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
     </div>
@@ -3350,7 +3345,7 @@ async function loadViews() {
         <div class="views-acc-title">
           <span style="${colorStyle}">${esc(acc.name)}</span>
           <button class="btn-refresh" onclick="loadViewHistory(${acc.idx})">${t('btn_load_history')}</button>
-          <button class="btn-sm" onclick="declineDiscards(${acc.idx},this)">🗑️ Очистить дискарды</button>
+          <button class="btn-sm" onclick="declineDiscards(${acc.idx},this)">🗑️ Очистить Отказы</button>
         </div>
         <div id="views-hist-${acc.idx}"><div class="c-dim" style="font-size:12px;padding:8px 0">⏳ Загружаю...</div></div>
       `;
