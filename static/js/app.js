@@ -4494,3 +4494,6 @@ document.getElementById('json-accounts-details').addEventListener('toggle', func
   if (this.open && !document.getElementById('json-accounts-ta').value.trim())
     jsonAccountsLoad(this.querySelector('button'));
 });
+
+// Apply i18n on page load
+applyI18n();
