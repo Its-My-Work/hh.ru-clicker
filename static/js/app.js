@@ -1971,6 +1971,10 @@ function buildCardHTML(acc) {
         <div class="stat-lbl">Найдено вакансий</div>
       </div>
       <div class="stat-box">
+        <div class="stat-val c-orange" id="acc-session-already-${acc.idx}">0</div>
+        <div class="stat-lbl">Уже отклик</div>
+      </div>
+      <div class="stat-box">
         <div class="stat-val c-blue" id="acc-session-db-${acc.idx}">0</div>
         <div class="stat-lbl">В базу вакансий</div>
       </div>
@@ -2252,6 +2256,7 @@ function updateCard(card, acc) {
   // Session stats
   const g = State.lastSnapshot?.global_stats || {};
   setText('acc-session-found-' + acc.idx, g.total_found || 0);
+  setText('acc-session-already-' + acc.idx, acc.already_applied || 0);
   setText('acc-session-db-' + acc.idx, g.storage_total || 0);
   setText('acc-session-tests-' + acc.idx, g.total_tests || 0);
   setText('acc-session-sent-' + acc.idx, g.total_sent || 0);
