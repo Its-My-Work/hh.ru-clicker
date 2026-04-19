@@ -2031,6 +2031,10 @@ function buildCardHTML(acc) {
       <span class="acc-touch-timer c-yellow" id="acc-touch-timer-${acc.idx}" style="display:none"></span>
     </div>
     <div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние отклики:</div>
+      <div class="acc-history" id="acc-hist-${acc.idx}"></div>
+    </div>
+    <div>
       <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние действия:</div>
       <div class="acc-event-log" id="acc-elog-${acc.idx}"></div>
     </div>
@@ -2041,20 +2045,6 @@ function buildCardHTML(acc) {
         onchange="applyTestsToggle(${acc.idx}, this)">
       ${t('card_apply_tests')}
     </label>
-    <div class="acc-actions">
-      <button class="btn-sm" id="acc-pause-btn-${acc.idx}"
-        onclick="sendCmd({type:'account_pause', idx:${acc.idx}})">${t('btn_acc_pause')}</button>
-      <button class="btn-sm" id="acc-touch-btn-${acc.idx}"
-        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме">📤 Поднять резюме</button>
-      <button class="btn-sm"
-        onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
-      <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
-        onclick="llmToggleAccount(${acc.idx},this)" title="ИИ ответы">💬 ИИ Ответы</button>
-      <button class="btn-sm" style="font-size:9px;padding:1px 5px;color:var(--green);border-color:var(--green)"
-        onclick="llmRunNow(this)" title="Проверить чаты">🔄 Проверить чат</button>
-      ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
-      ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
-    </div>
     <details class="acc-letter-wrap" id="acc-letter-wrap-${acc.idx}">
       <summary>${t('letter_section')}</summary>
       <div class="acc-letter-body">
@@ -2118,6 +2108,20 @@ function buildCardHTML(acc) {
         </div>
       </div>
     </details>
+    <div class="acc-actions">
+      <button class="btn-sm" id="acc-pause-btn-${acc.idx}"
+        onclick="sendCmd({type:'account_pause', idx:${acc.idx}})">${t('btn_acc_pause')}</button>
+      <button class="btn-sm" id="acc-touch-btn-${acc.idx}"
+        onclick="resumeTouchNow(${acc.idx},this)" title="Поднять резюме">📤 Поднять резюме</button>
+      <button class="btn-sm"
+        onclick="declineDiscards(${acc.idx},this)">${t('btn_clear_discards')}</button>
+      <button class="btn-sm llm-toggle-btn llm-on" id="acc-llm-btn-${acc.idx}"
+        onclick="llmToggleAccount(${acc.idx},this)" title="ИИ ответы">💬 ИИ Ответы</button>
+      <button class="btn-sm" style="font-size:9px;padding:1px 5px;color:var(--green);border-color:var(--green)"
+        onclick="llmRunNow(this)" title="Проверить чаты">🔄 Проверить чат</button>
+      ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
+      ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
+    </div>
   `;
 }
 
@@ -2327,6 +2331,12 @@ function updateCard(card, acc) {
   }
 
   // HH stats removed
+
+  // History
+  const hist = document.getElementById('acc-hist-' + acc.idx);
+  if (hist && acc.action_history && acc.action_history.length > 0) {
+    hist.textContent = acc.action_history.slice(-5).join('  |  ');
+  }
 
   // Per-account event log
   const elog = document.getElementById('acc-elog-' + acc.idx);
