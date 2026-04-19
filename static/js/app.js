@@ -2035,6 +2035,40 @@ function buildCardHTML(acc) {
       ${acc.temp && !acc.bot_active ? `<button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="sessionActivate(${acc.idx})">${t('btn_launch')}</button>` : ''}
       ${acc.temp ? `<button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="sessionRemove(${acc.idx})">${t('btn_delete')}</button>` : ''}
     </div>
+    <div style="margin-bottom:8px">
+      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Статистика за сессию:</div>
+      <div class="acc-stats">
+        <div class="stat-box" title="Сессия / Всего за всё время">
+          <div class="stat-val c-green" id="session-acc-sent-${acc.idx}">0</div>
+          <div class="stat-lbl">Отклики <span style="color:var(--dim);font-size:10px">/ <span id="session-acc-total-${acc.idx}">0</span></span></div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val c-magenta" id="session-acc-tests-${acc.idx}">0</div>
+          <div class="stat-lbl">Опросники</div>
+        </div>
+        <div class="stat-box" id="session-acc-qsent-box-${acc.idx}" style="display:none">
+          <div class="stat-val c-cyan" id="session-acc-qsent-${acc.idx}">0</div>
+          <div class="stat-lbl">📝 Опросы</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val c-blue" id="session-acc-already-${acc.idx}">0</div>
+          <div class="stat-lbl">Откликались ранее</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val c-red" id="session-acc-err-${acc.idx}">0</div>
+          <div class="stat-lbl">Ошибки</div>
+        </div>
+        <div class="stat-box" id="session-acc-sal-box-${acc.idx}" style="display:none">
+          <div class="stat-val c-yellow" id="session-acc-sal-${acc.idx}">0</div>
+          <div class="stat-lbl">💰 Зарплата</div>
+        </div>
+        <div class="stat-box" id="session-acc-intrv-box-${acc.idx}" style="">
+          <div class="stat-val" style="color:#f0c060" id="session-acc-intrv-${acc.idx}">0</div>
+          <div id="session-acc-intrv-total-${acc.idx}" style="font-size:10px;color:var(--dim);line-height:1.2"></div>
+          <div class="stat-lbl">🎯 Интервью</div>
+        </div>
+      </div>
+    </div>
     <details class="acc-letter-wrap" id="acc-letter-wrap-${acc.idx}">
       <summary>${t('letter_section')}</summary>
       <div class="acc-letter-body">
@@ -2221,6 +2255,33 @@ function updateCard(card, acc) {
     intrvBox.style.display = total > 0 ? '' : 'none';
     setText('acc-intrv-' + acc.idx, recent);
     const totalEl = document.getElementById('acc-intrv-total-' + acc.idx);
+    if (totalEl) totalEl.textContent = total > recent ? `всего ${total}` : '';
+  }
+
+  // Session stats duplicate
+  setText('session-acc-sent-' + acc.idx, acc.sent);
+  setText('session-acc-total-' + acc.idx, (acc.total_applied ?? '') + dailyInfo);
+  setText('session-acc-tests-' + acc.idx, acc.tests);
+  setText('session-acc-already-' + acc.idx, acc.already_applied);
+  setText('session-acc-err-' + acc.idx, acc.errors);
+  const sessionQBox = document.getElementById('session-acc-qsent-box-' + acc.idx);
+  if (sessionQBox) {
+    const qSent = acc.questionnaire_sent || 0;
+    sessionQBox.style.display = qSent > 0 ? '' : 'none';
+    setText('session-acc-qsent-' + acc.idx, qSent);
+  }
+  const sessionSalBox = document.getElementById('session-acc-sal-box-' + acc.idx);
+  if (sessionSalBox) {
+    sessionSalBox.style.display = acc.salary_filtered > 0 ? '' : 'none';
+    setText('session-acc-sal-' + acc.idx, acc.salary_filtered || 0);
+  }
+  const sessionIntrvBox = document.getElementById('session-acc-intrv-box-' + acc.idx);
+  if (sessionIntrvBox) {
+    const recent = acc.hh_interviews_recent ?? acc.hh_interviews ?? 0;
+    const total  = acc.hh_interviews || 0;
+    sessionIntrvBox.style.display = total > 0 ? '' : 'none';
+    setText('session-acc-intrv-' + acc.idx, recent);
+    const totalEl = document.getElementById('session-acc-intrv-total-' + acc.idx);
     if (totalEl) totalEl.textContent = total > recent ? `всего ${total}` : '';
   }
 
