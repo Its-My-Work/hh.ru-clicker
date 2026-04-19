@@ -154,6 +154,12 @@ body {
   gap: 6px;
   margin-bottom: 10px;
 }
+.acc-session-stat {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
 .stat-box {
   background: var(--bg-card2);
   border-radius: 4px;

@@ -1963,6 +1963,28 @@ function buildCardHTML(acc) {
     </div>
     <div class="acc-progress"><div class="acc-progress-fill" id="acc-prog-${acc.idx}"></div></div>
     <div style="font-weight:700;margin:8px 0 4px 0;">Статистика сессии</div>
+    <div class="acc-session-stat">
+      <div class="stat-box">
+        <div class="stat-val c-cyan" id="acc-session-found-${acc.idx}">0</div>
+        <div class="stat-lbl">Найдено вакансий</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-blue" id="acc-session-db-${acc.idx}">0</div>
+        <div class="stat-lbl">В базу вакансий</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-magenta" id="acc-session-tests-${acc.idx}">0</div>
+        <div class="stat-lbl">Опросники</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-green" id="acc-session-sent-${acc.idx}">0</div>
+        <div class="stat-lbl">Откликов</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val c-red" id="acc-session-err-${acc.idx}">0</div>
+        <div class="stat-lbl">Ошибок</div>
+      </div>
+    </div>
     <div class="acc-stats">
       <div class="stat-box" title="Сессия / Всего за всё время">
         <div class="stat-val c-green" id="acc-sent-${acc.idx}">0</div>
@@ -2197,6 +2219,14 @@ function updateCard(card, acc) {
   setText('acc-tests-' + acc.idx, acc.tests);
   setText('acc-already-' + acc.idx, acc.already_applied);
   setText('acc-err-' + acc.idx, acc.errors);
+
+  // Session stats
+  const g = State.lastSnapshot?.global_stats || {};
+  setText('acc-session-found-' + acc.idx, g.total_found || 0);
+  setText('acc-session-db-' + acc.idx, g.storage_total || 0);
+  setText('acc-session-tests-' + acc.idx, g.total_tests || 0);
+  setText('acc-session-sent-' + acc.idx, g.total_sent || 0);
+  setText('acc-session-err-' + acc.idx, g.total_errors || 0);
 
   // Questionnaire sent (show when > 0)
   const qBox = document.getElementById('acc-qsent-box-' + acc.idx);
