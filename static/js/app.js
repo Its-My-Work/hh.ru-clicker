@@ -11,7 +11,7 @@ const T = {
     tab_db: '📂 Вакансии',
     tab_hh: '🎯 HH Статус',
     tab_views: '👁️ Просмотры',
-    tab_apply: '🚀 Отклик',
+    tab_apply: '🚀 Ручной Отклик',
     tab_settings: '⚙️ Настройки',
     tab_llm: '💬 ИИ Ответы',
     // Header
@@ -40,7 +40,7 @@ const T = {
     status_hh_limit_hint: 'HH ограничил отклики. Бот проверит снятие лимита автоматически',
     // Card labels
     stat_replies: 'Отклики',
-    stat_tests: 'Тесты',
+    stat_tests: 'Опросники',
     stat_surveys: '📝 Опросы',
     stat_already: 'Откликались ранее',
     stat_errors: 'Ошибки',
@@ -245,7 +245,8 @@ const T = {
     tab_db: '📂 Database',
     tab_hh: '🎯 HH Status',
     tab_views: '👁️ Views',
-    tab_apply: '🚀 Apply',
+    tab_apply: '🚀 Manual Apply',
+    tab_llm: '💬 AI Replies',
     tab_settings: '⚙️ Settings',
     // Header
     hdr_found: 'found',
@@ -2005,8 +2006,14 @@ function buildCardHTML(acc) {
       <span class="acc-resume-stat c-green">📬 <span id="acc-rs-inv-${acc.idx}">0</span> ${t('rs_inv')}</span>
       <span class="acc-touch-timer c-yellow" id="acc-touch-timer-${acc.idx}" style="display:none"></span>
     </div>
-    <div class="acc-history" id="acc-hist-${acc.idx}"></div>
-    <div class="acc-event-log" id="acc-elog-${acc.idx}"></div>
+    <div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние отклики:</div>
+      <div class="acc-history" id="acc-hist-${acc.idx}"></div>
+    </div>
+    <div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">Последние действия:</div>
+      <div class="acc-event-log" id="acc-elog-${acc.idx}"></div>
+    </div>
     <div id="acc-errbadge-${acc.idx}" style="display:none;font-size:11px;padding:2px 0;margin-bottom:2px"></div>
     <div id="acc-cookiesbadge-${acc.idx}" class="cookies-expired-badge" style="display:none">${t('cookies_expired_badge')}</div>
     <label class="acc-skip-tests${acc.apply_tests ? ' active' : ''}" id="acc-apply-label-${acc.idx}">
@@ -2284,7 +2291,7 @@ function updateCard(card, acc) {
   const meta = document.getElementById('acc-meta-' + acc.idx);
   if (meta) {
     const parts = [];
-    if (acc.found_vacancies > 0) parts.push(`🔍 Найдено ${acc.found_vacancies} вакансий `);
+    if (acc.found_vacancies > 0) parts.push(`Найдено ${acc.found_vacancies} вакансий`);
     if (acc.next_resume_touch) parts.push(`Подъем резюме через: ${acc.next_resume_touch}`);
     meta.innerHTML = parts.join('<br>');
   }
@@ -2374,7 +2381,7 @@ function updateCard(card, acc) {
   const llmBtn = document.getElementById('acc-llm-btn-' + acc.idx);
   if (llmBtn) {
     const enabled = acc.llm_enabled !== false; // default true
-    llmBtn.textContent = enabled ? '💬 Ответы ✅' : '💬 Ответы ❌';
+    llmBtn.textContent = enabled ? '💬 ИИ Ответы ✅' : '💬 ИИ Ответы ❌';
     llmBtn.classList.toggle('llm-on', enabled);
     llmBtn.classList.toggle('llm-off', !enabled);
   }
