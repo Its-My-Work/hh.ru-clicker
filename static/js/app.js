@@ -53,7 +53,7 @@ const T = {
     btn_acc_resume: '▶ Продолжить',
     btn_acc_global_pause: '⏸ Глобальная пауза',
     btn_resume_touch: '📤 Поднять резюме',
-    btn_clear_discards: '🗑️ Очистить дискарды',
+    btn_clear_discards: '🗑️ Очистить Отказы',
     btn_launch: '▶ Запустить',
     btn_delete: '✕ Удалить',
     card_apply_tests: 'Откликаться на вакансии с Опросником',
@@ -1606,7 +1606,7 @@ async function resumeTouchNow(idx, btn) {
       if (btn && btn.getAttribute('data-touching')) {
         btn.removeAttribute('data-touching');
         btn.disabled = false;
-        btn.textContent = '📤 Поднять';
+        btn.textContent = '📤 Поднять резюме';
         btn.style.color = '';
       }
     }, 15000);
@@ -2172,11 +2172,11 @@ function updateCard(card, acc) {
       if (countdown) {
         touchBtn.removeAttribute('data-touching');
         touchBtn.disabled = false;
-        touchBtn.textContent = '📤 Сейчас';
+        touchBtn.textContent = '📤 Поднять резюме';
         touchBtn.style.color = '';
       }
     } else if (!touchBtn.disabled) {
-      touchBtn.textContent = '📤 Сейчас';
+      touchBtn.textContent = '📤 Поднять резюме';
       touchBtn.style.color = '';
     }
   }
