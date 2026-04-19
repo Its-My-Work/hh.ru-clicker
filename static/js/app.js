@@ -56,7 +56,7 @@ const T = {
     btn_clear_discards: '🗑️ Очистить дискарды',
     btn_launch: '▶ Запустить',
     btn_delete: '✕ Удалить',
-    card_apply_tests: 'Откликаться на вакансии с тестом',
+    card_apply_tests: 'Откликаться на вакансии с Опросником',
     letter_section: '✉️ Письмо',
     url_section: '🔗 URL поиска',
     btn_save: '💾 Сохранить',
@@ -67,10 +67,10 @@ const T = {
     gs_session: '📊 Сессия',
     gs_found: '🔍 Найдено',
     gs_applied: '✅ Отклики',
-    gs_tests: '🧪 Тесты',
+    gs_tests: '🧪 Опросники',
     gs_errors: '❌ Ошибки',
     gs_in_db: '💾 В базе',
-    gs_in_db_tests: '🧪 Тест.',
+    gs_in_db_tests: '🧪 Опросник.',
     sidebar_recent: '📬 Последние отклики',
     recent_empty: 'Ожидание откликов...',
     no_accounts: 'Нет аккаунтов. Добавьте аккаунт в настройках ⚙️',
@@ -2281,8 +2281,8 @@ function updateCard(card, acc) {
   const meta = document.getElementById('acc-meta-' + acc.idx);
   if (meta) {
     const parts = [];
-    if (acc.found_vacancies > 0) parts.push(`🔍${acc.found_vacancies} вакансий найдено`);
-    if (acc.next_resume_touch) parts.push(`Подьъем резюме через: ${acc.next_resume_touch}`);
+    if (acc.found_vacancies > 0) parts.push(`🔍 Найдено ${acc.found_vacancies} вакансий <br>`);
+    if (acc.next_resume_touch) parts.push(`Подъем резюме через: ${acc.next_resume_touch}`);
     meta.textContent = parts.join('  ');
   }
 
