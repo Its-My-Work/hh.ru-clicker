@@ -7,8 +7,10 @@ import aiohttp
 import ssl
 import re
 import random
+import json
 from datetime import datetime, timedelta
 from collections import deque
+from pathlib import Path
 import time
 import threading
 import requests
@@ -60,6 +62,22 @@ from app.hh_negotiations import (
 )
 
 from app.state import AccountState
+
+
+DATA_DIR = Path("data")
+APPLIED_FILE = DATA_DIR / "applied_vacancies.json"
+
+
+def get_account_applied_count(account_name: str) -> int:
+    """Get applied count for account from file (not cache)"""
+    try:
+        if APPLIED_FILE.exists():
+            with open(APPLIED_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return len(data.get(account_name, {}))
+    except Exception:
+        pass
+    return 0
 
 
 # -- Async page fetcher (used only by BotManager) --
@@ -397,7 +415,7 @@ class BotManager:
                 "status": s.status,
                 "status_detail": s.status_detail,
                 "sent": s.sent,
-                "total_applied": len((_cache_applied or {}).get(s.name, {})),
+                "total_applied": get_account_applied_count(s.name),
                 "tests": s.tests,
                 "errors": s.errors,
                 "already_applied": s.already_applied,
@@ -480,7 +498,7 @@ class BotManager:
                     "status": s.status,
                     "status_detail": s.status_detail,
                     "sent": s.sent,
-                    "total_applied": len((_cache_applied or {}).get(s.acc["name"], {})),
+                    "total_applied": get_account_applied_count(s.acc["name"]),
                     "tests": s.tests,
                     "errors": s.errors,
                     "already_applied": s.already_applied,
