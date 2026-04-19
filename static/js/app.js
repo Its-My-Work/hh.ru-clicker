@@ -1976,7 +1976,7 @@ function buildCardHTML(acc) {
       </div>
       <div class="stat-box">
         <div class="stat-val c-blue" id="acc-session-db-${acc.idx}">0</div>
-        <div class="stat-lbl">В базу вакансий</div>
+        <div class="stat-lbl">В базу</div>
       </div>
       <div class="stat-box">
         <div class="stat-val c-magenta" id="acc-session-tests-${acc.idx}">0</div>
@@ -2016,37 +2016,6 @@ function buildCardHTML(acc) {
       <div class="stat-box">
         <div class="stat-val c-red" id="acc-total-rej-${acc.idx}">0</div>
         <div class="stat-lbl">Отказы</div>
-      </div>
-    </div>
-    <div class="acc-stats">
-      <div class="stat-box" title="Сессия / Всего за всё время">
-        <div class="stat-val c-green" id="acc-sent-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_replies')} <span style="color:var(--dim);font-size:10px">/ <span id="acc-total-${acc.idx}">0</span></span></div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val c-magenta" id="acc-tests-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_tests')}</div>
-      </div>
-      <div class="stat-box" id="acc-qsent-box-${acc.idx}" style="display:none">
-        <div class="stat-val c-cyan" id="acc-qsent-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_surveys')}</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val c-blue" id="acc-already-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_already')}</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-val c-red" id="acc-err-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_errors')}</div>
-      </div>
-      <div class="stat-box" id="acc-sal-box-${acc.idx}" style="display:none">
-        <div class="stat-val c-yellow" id="acc-sal-${acc.idx}">0</div>
-        <div class="stat-lbl">${t('stat_salary')}</div>
-      </div>
-      <div class="stat-box" id="acc-intrv-box-${acc.idx}" style="display:none">
-        <div class="stat-val" style="color:#f0c060" id="acc-intrv-${acc.idx}">0</div>
-        <div id="acc-intrv-total-${acc.idx}" style="font-size:10px;color:var(--dim);line-height:1.2"></div>
-        <div class="stat-lbl">${t('stat_interviews')}</div>
       </div>
     </div>
     <div class="acc-vacancy" id="acc-vacancy-${acc.idx}">
@@ -2246,12 +2215,6 @@ function updateCard(card, acc) {
   }
 
   // Stats
-  const dailyInfo = acc.daily_limit > 0 ? ` (${acc.daily_sent || 0}/${acc.daily_limit} сегодня)` : (acc.daily_sent ? ` (${acc.daily_sent} сегодня)` : '');
-  setText('acc-sent-' + acc.idx, acc.sent);
-  setText('acc-total-' + acc.idx, (acc.total_applied ?? '') + dailyInfo);
-  setText('acc-tests-' + acc.idx, acc.tests);
-  setText('acc-already-' + acc.idx, acc.already_applied);
-  setText('acc-err-' + acc.idx, acc.errors);
 
   // Session stats
   const g = State.lastSnapshot?.global_stats || {};
