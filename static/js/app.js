@@ -1962,6 +1962,7 @@ function buildCardHTML(acc) {
         onclick="oauthToggleAccount(${acc.idx},this)" title="Метод откликов: OAuth API или Web cookies">${acc.use_oauth ? '🔑API' : '🌐Web'}</button>
     </div>
     <div class="acc-progress"><div class="acc-progress-fill" id="acc-prog-${acc.idx}"></div></div>
+    <div style="font-weight:700;margin:8px 0 4px 0;">Статистика сессии</div>
     <div class="acc-stats">
       <div class="stat-box" title="Сессия / Всего за всё время">
         <div class="stat-val c-green" id="acc-sent-${acc.idx}">0</div>
