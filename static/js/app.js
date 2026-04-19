@@ -1539,6 +1539,13 @@ function buildSessList(snap) {
           `<span id="acc-touch-label-${acc.idx}">${acc.resume_touch_enabled !== false ? '🔁 вкл' : '⏸ выкл'}</span>` +
         `</span>` +
       `</div>` +
+      `<div style="margin-top:6px">` +
+        `<label class="acc-skip-tests${acc.apply_tests ? ' active' : ''}" id="sess-apply-label-${acc.idx}">` +
+          `<input type="checkbox" id="sess-apply-cb-${acc.idx}" ${acc.apply_tests ? 'checked' : ''}` +
+            `onchange="applyTestsToggle(${acc.idx}, this)">` +
+          `${t('card_apply_tests')}` +
+        `</label>` +
+      `</div>` +
       `<div id="sess-edit-form-${acc.idx}" style="display:none;margin-top:10px">` +
         `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">` +
           `<div><div style="font-size:11px;color:var(--dim);margin-bottom:3px">Имя</div>` +
@@ -2040,11 +2047,6 @@ function buildCardHTML(acc) {
     </div>
     <div id="acc-errbadge-${acc.idx}" style="display:none;font-size:11px;padding:2px 0;margin-bottom:2px"></div>
     <div id="acc-cookiesbadge-${acc.idx}" class="cookies-expired-badge" style="display:none">${t('cookies_expired_badge')}</div>
-    <label class="acc-skip-tests${acc.apply_tests ? ' active' : ''}" id="acc-apply-label-${acc.idx}">
-      <input type="checkbox" id="acc-apply-cb-${acc.idx}" ${acc.apply_tests ? 'checked' : ''}
-        onchange="applyTestsToggle(${acc.idx}, this)">
-      ${t('card_apply_tests')}
-    </label>
     <details class="acc-letter-wrap" id="acc-letter-wrap-${acc.idx}">
       <summary>${t('letter_section')}</summary>
       <div class="acc-letter-body">
@@ -2322,13 +2324,7 @@ function updateCard(card, acc) {
     }
   }
 
-  // Meta
-  const meta = document.getElementById('acc-meta-' + acc.idx);
-  if (meta) {
-    const parts = [];
-    if (acc.next_resume_touch) parts.push(`Подъем резюме через: ${acc.next_resume_touch}`);
-    meta.innerHTML = parts.join('<br>');
-  }
+  // Meta removed
 
   // HH stats removed
 
@@ -3969,7 +3965,7 @@ async function applyTestsToggle(idx, cb) {
     const res = await fetch(`/api/account/${idx}/apply_tests`, {method:'POST'});
     const data = await res.json();
     if (!data.ok) { cb.checked = !cb.checked; return; }
-    const label = document.getElementById('acc-apply-label-' + idx);
+    const label = cb.parentElement; // label is parent of checkbox
     if (label) {
       if (data.apply_tests) label.classList.add('active');
       else label.classList.remove('active');

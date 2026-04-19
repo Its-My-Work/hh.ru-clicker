@@ -207,6 +207,28 @@ class BotManager:
         except Exception as e:
             log_debug(f"Failed to load recent responses: {e}")
         self.account_states = [AccountState(acc) for acc in accounts_data]
+        # Load recent responses for each account
+        for state in self.account_states:
+            try:
+                acc_name = state.name
+                if acc_name in _cache_applied and isinstance(_cache_applied[acc_name], dict):
+                    acc_items = []
+                    for vid, info in _cache_applied[acc_name].items():
+                        if isinstance(info, dict):
+                            acc_items.append({
+                                "id": vid, "title": info.get("title", ""),
+                                "company": info.get("company", ""),
+                                "time": (info.get("at", "") or "")[:16].replace("T", " "),
+                                "icon": "✅", "acc": acc_name,
+                                "color": state.color,
+                                "result": "sent",
+                                "salary": "",
+                            })
+                    acc_items.sort(key=lambda x: x.get("time", ""), reverse=True)
+                    for item in acc_items[:10]:
+                        state.recent_responses.append(item)
+            except Exception as e:
+                log_debug(f"Failed to load recent responses for {acc_name}: {e}")
         for i, state in enumerate(self.account_states):
             t1 = threading.Thread(
                 target=self._run_account_worker, args=(i, state), daemon=True
@@ -379,6 +401,17 @@ class BotManager:
             "result": result,
             "icon": result_icons.get(result, "❓"),
         })
+        state.recent_responses.appendleft({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "acc": state.short,
+            "color": state.color,
+            "id": vid,
+            "title": title,
+            "company": company,
+            "salary": salary,
+            "result": result,
+            "icon": result_icons.get(result, "❓"),
+        })
 
     def get_state_snapshot(self) -> dict:
         """Full JSON snapshot for WS broadcast"""
@@ -525,6 +558,7 @@ class BotManager:
                     "hh_interviews_list": s.hh_interviews_list[:20],
                     "hh_possible_offers": s.hh_possible_offers[:10],
                     "action_history": list(s.action_history),
+                    "recent_responses": list(s.recent_responses),
                     "resume_views_7d": s.resume_views_7d,
                     "resume_views_new": s.resume_views_new,
                     "resume_shows_7d": s.resume_shows_7d,
